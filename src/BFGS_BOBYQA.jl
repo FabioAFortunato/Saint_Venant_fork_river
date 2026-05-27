@@ -1,3 +1,11 @@
+using Optim
+using NLopt
+using ForwardDiff
+using LinearAlgebra
+
+include("obj_func.jl")
+include("aux_func.jl")
+
 
 function minimizar_L_sv_bfgs(
     x::AbstractVector{T};
@@ -5,7 +13,7 @@ function minimizar_L_sv_bfgs(
     arquivo_saida=nothing,
     rotulo_execucao="BFGS",
     n_restart=1,
-) where T<:Real
+    ) where T<:Real
     n = length(x)
     lb = fill(0.0, n)
     ub = fill(0.5, n)
@@ -13,7 +21,7 @@ function minimizar_L_sv_bfgs(
     global n_calfun = 0
     global inicio_s = time()
     global nome = arquivo_em_results(
-        arquivo_saida === nothing ? "teste_bfgs_$(label_tmax(tmax)).txt" : arquivo_saida,
+        arquivo_saida === nothing ? "results/teste_bfgs_$(label_tmax(tmax)).txt" : arquivo_saida,
     )
 
     rho = 10.0
@@ -26,7 +34,7 @@ function minimizar_L_sv_bfgs(
     taxa_min = taxa_inicial
     tentativas_por_taxa = 10
     rmsd_tol_restart = 0.06
-    X = clamp.(copy(float.(x)), lb, ub)
+    X = copy(float.(x))
     tempo_total_inicio = time()
 
     open(nome, "w") do file
@@ -66,7 +74,6 @@ function minimizar_L_sv_bfgs(
             ),
         )
 
-        X = clamp.(Optim.minimizer(resultado_bfgs), lb, ub)
         f_bfgs = Optim.minimum(resultado_bfgs)
 
         z_erro = sv_fork(X[1:end-1], tmax)
@@ -114,8 +121,8 @@ function minimizar_L_sv_bfgs(
 end
 
 
-function minimizar_L_sv_bfgs_bobyqa(
-    x0::AbstractVector{T}=fill(0.08, n_man + 1);
+function minimizar_L_sv_bfgs_bobyqa(;
+    x0::AbstractVector{T}=fill(0.08, n_man + 1),
     tmax=5.0,
     rhobeg=0.05,
     rhoend=0.001,
@@ -131,7 +138,7 @@ function minimizar_L_sv_bfgs_bobyqa(
     limites_inferiores = fill(Float64(lb), n)
     limites_superiores = fill(Float64(ub), n)
     arquivo = arquivo_em_results(
-        arquivo_saida === nothing ? "teste_bfgs_bobyqa_L_sv_$(label_tmax(tmax)).txt" : arquivo_saida,
+        arquivo_saida === nothing ? "results/bfgs_bobyqa_L_sv_$(label_tmax(tmax)).txt" : arquivo_saida,
     )
 
     x_bfgs = minimizar_L_sv_bfgs(
@@ -141,7 +148,6 @@ function minimizar_L_sv_bfgs_bobyqa(
         rotulo_execucao="BFGS do teste BFGS + BOBYQA",
         n_restart=1,
     )
-    x_inicial_bobyqa = clamp.(Float64.(x_bfgs), lb, ub)
 
     open(arquivo, "a") do file
         write(file, "\n\nEtapa BOBYQA sobre saida do BFGS\n")
@@ -171,7 +177,6 @@ function minimizar_L_sv_bfgs_bobyqa(
     f_bobyqa, x_bobyqa, status_bobyqa = NLopt.optimize(opt, x_inicial_bobyqa)
     tempo_bobyqa = time() - tempo_inicio_bobyqa
 
-    x_final = clamp.(x_bobyqa, lb, ub)
     z_erro = sv_fork(x_final[1:end-1], tmax)
     rmsd_final = any(isnan, z_erro) ? Inf : norm(z_erro) / sqrt(length(z_erro))
     f_obj_base = soma_desvio_quadratico(x_final)
@@ -209,10 +214,10 @@ function minimizar_L_sv_bfgs_bobyqa(
     )
 end
 
-function testar_L_sv_bfgs_bobyqa_tmax(
-    x0::AbstractVector{T}=fill(0.08, n_man + 1);
+function BFGS_BOBYQA_test(;
+    x0::AbstractVector{T}=fill(0.08, n_man + 1),
     tmax_values=(5.0, 15.0),
-    arquivo_prefixo="teste_bfgs_bobyqa_L_sv",
+    arquivo_prefixo="results/bfgs_bobyqa_L_sv",
     ) where T<:Real
     resultados = Dict{Float64,NamedTuple}()
 

@@ -1,11 +1,14 @@
 
+using ForwardDiff
+
+include("sv_fork.jl")
 function soma_desvio_quadratico(x::AbstractVector{T}) where T<:Real
     n_man = length(x) - 1
     x_ref = x[n_man + 1]
     return sum((x[i] - x_ref)^2 for i in 1:n_man)
 end
 
-function quad_fun(x::AbstractVector{T}, tmax) where T<:Real
+function quad_fun(x::AbstractVector{T}; tmax = 31.0) where T<:Real
     global n_calfun, nome, inicio_s
 
     # Detecta se é avaliação com derivada (ForwardDiff)
@@ -45,7 +48,7 @@ function quad_fun(x::AbstractVector{T}, tmax) where T<:Real
         println("RMSD = $val_RMSD")
 
         open(nome, "a") do file
-            write(file, "$(round(tempo_s, digits=3))\t$n_calfun\t$val_RMSD\n")
+            write(file, "$(round(tempo_s, digits=3))\t$n_calfun\t$val_RMSD\t$erro_quadratico_total\n")
         end
     end
 

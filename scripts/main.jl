@@ -1,2 +1,4 @@
-n_calfun = 0
-inicio_s = time()
+n_man = 101
+
+include("../src/obj_func.jl")
+include("../src/BFGS_BOBYQA.jl")

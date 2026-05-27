@@ -1,17 +1,17 @@
 
-# --- smithify rules ---
-# Ignore temporary files and outputs
-data/*
-logs/*
-results/*
-_research/tmp/*
+# # --- smithify rules ---
+# # Ignore temporary files and outputs
+# data/*
+# logs/*
+# results/*
+# _research/tmp/*
 
-# Exceptions
-!data/README.md
+# # Exceptions
+# !data/README.md
 
-# System files
-.DS_Store
-Thumbs.db
-*.swp
-*.bak
-*.tmp
+# # System files
+# .DS_Store
+# Thumbs.db
+# *.swp
+# *.bak
+# *.tmp
