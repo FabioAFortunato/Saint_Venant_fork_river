@@ -1,94 +1,3 @@
-#git init # inicia o repositório local
-#git add <arquivos> <ou * para tudo.. use com responsabilidade>
-#git commit -m "comentario"
-#git pull # puchar alterações do repositório remoto
-#git push # enviar alterações para o repositório remoto
-#git remote add <link> # adiciona e configura um repositório remoto
-
-using DelimitedFiles
-using ForwardDiff
-using Interpolations
-using LinearAlgebra
-using NLopt
-using Optim
-using Random
-using PGFPlotsX
-
-include("../data/processed/dado_fork.jl")
-include("../src/BFGS.jl")
-
-const fake = 0 # if fake = 1 then we use pregenerated data
-const nx = 101 # grid number
-const tmin = 0.0 # seconds
-const tmax1 = 0.0 + 60.0 * 0.0 + 60.0 * 60.0 * 0.0 + 60.0 * 60.0 * 24.0 * 31.0
-const timprim = 0.0 + 60.0 * 0.0 + 60.0 * 60.0 * 4.0 + 60.0 * 60.0 * 24.0 * 0.0
-const nt = round(Int32, 1 + (tmax1 - tmin - 60.0 * 60.0 * 24.0 * 3.0) / timprim)
-const n_man = 101
-const RESULTS_DIR = normpath(joinpath(@__DIR__, "..", "results"))
-
-if fake == 1
-    dados_fake = readdlm("dado_fake.txt", ' ')
-    tfake = dados_fake[:, 1] * (24 * 60 * 60)
-    z1fake = dados_fake[:, 2]
-    z2fake = dados_fake[:, 3]
-
-    zfinal_fake = interpolate((tfake,), z1fake, Gridded(Linear()))
-    zfinal_fake = extrapolate(zfinal_fake, Line())
-
-    zmeio_fake = interpolate((tfake,), z2fake, Gridded(Linear()))
-    zmeio_fake = extrapolate(zmeio_fake, Line())
-end
-
-n_calfun = 0
-inicio_s = time()
-
-
-function arquivo_em_results(arquivo)
-    mkpath(RESULTS_DIR)
-    return joinpath(RESULTS_DIR, basename(String(arquivo)))
-end
-
-nome = arquivo_em_results("teste_bfgs_bobyqa_L_sv_5.txt")
-
-function label_tmax(tmax)
-    tmax_float = Float64(tmax)
-    return isinteger(tmax_float) ? string(Int(round(tmax_float))) : replace(string(tmax_float), "." => "_")
-end
-
-function busca_perturbacao_segura(
-    f,
-    x_atual;
-    taxa_inicial=0.05,
-    taxa_min=0.001,
-    tentativas_por_taxa=500,
-    lb=0.0,
-    ub=1.0,
-)
-    n = length(x_atual)
-    taxa = taxa_inicial
-    limite_inferior = lb .* ones(n)
-    limite_superior = ub .* ones(n)
-
-    while taxa >= taxa_min
-        println("Tentando perturbacoes com taxa = ", taxa)
-
-        for tentativa in 1:tentativas_por_taxa
-            perturbacao = (2.0 .* rand(n) .- 1.0) .* taxa
-            x_temp = clamp.(x_atual .+ perturbacao, limite_inferior, limite_superior)
-            f_val = f(x_temp)
-
-            if isfinite(f_val) && !isnan(f_val) && f_val <= 1000.0
-                println("Perturbacao segura encontrada na tentativa ", tentativa, " | f = ", f_val)
-                return x_temp
-            end
-        end
-
-        taxa /= 2.0
-    end
-
-    println("Aviso: Nenhuma perturbacao segura encontrada. Retornando ponto do BFGS.")
-    return x_atual
-end
 
 function minimizar_L_sv_bfgs(
     x::AbstractVector{T};
@@ -204,7 +113,6 @@ function minimizar_L_sv_bfgs(
     return X
 end
 
-const LA_method2 = minimizar_L_sv_bfgs
 
 function minimizar_L_sv_bfgs_bobyqa(
     x0::AbstractVector{T}=fill(0.08, n_man + 1);
@@ -215,7 +123,7 @@ function minimizar_L_sv_bfgs_bobyqa(
     lb=0.0,
     ub=0.5,
     arquivo_saida=nothing,
-) where T<:Real
+    ) where T<:Real
     n = length(x0)
     npt = 2 * n + 1
     lambda = zeros(2 * nt)
@@ -305,7 +213,7 @@ function testar_L_sv_bfgs_bobyqa_tmax(
     x0::AbstractVector{T}=fill(0.08, n_man + 1);
     tmax_values=(5.0, 15.0),
     arquivo_prefixo="teste_bfgs_bobyqa_L_sv",
-) where T<:Real
+    ) where T<:Real
     resultados = Dict{Float64,NamedTuple}()
 
     for tmax in Float64.(collect(tmax_values))
@@ -333,7 +241,3 @@ function testar_L_sv_bfgs_bobyqa_tmax(
 
     return resultados
 end
-
-# ng = fill(0.08, n_man + 1)
-# run_L_sv_bfgs_bobyqa_tmax = true
-# result = run_L_sv_bfgs_bobyqa_tmax ? testar_L_sv_bfgs_bobyqa_tmax(ng) : ng

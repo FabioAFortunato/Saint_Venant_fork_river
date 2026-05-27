@@ -1,5 +1,4 @@
-using ForwardDiff, LinearAlgebra, Random
-using Interpolations
+using ForwardDiff, LinearAlgebra
 
 function bb_nonmonotone(
     f,
@@ -10,7 +9,7 @@ function bb_nonmonotone(
     c1=1e-4,
     alpha_min=1e-5,
     alpha_max=1e5,
-) where T<:Real
+    ) where T<:Real
     n = length(x0)
 
     x_k = copy(x0)
@@ -94,7 +93,7 @@ function spectral_corrected(
     alpha_min=1e-12,
     max_backtrack=20,
     c1=1e-4,
-) where T<:Real
+    ) where T<:Real
     x_k = clamp.(copy(x0), lb, ub)
     x_k1 = copy(x_k)
 
@@ -469,24 +468,6 @@ function powell_bfgs(f, gfun, x0::AbstractVector{T};
     return x
 end
 
-function expande_dimensao(x_antigo, novo_n_man)
-    n_antigo = length(x_antigo) - 1
-    
-    # Separar a parte espacial do Ãºltimo parÃ¢metro
-    espaco_antigo = x_antigo[1:n_antigo]
-    parametro_final = x_antigo[end]
-    
-    # Criar malhas virtuais (de 0.0 a 1.0) para mapear o rio
-    malha_antiga = range(0.0, 1.0, length=n_antigo)
-    malha_nova = range(0.0, 1.0, length=novo_n_man)
-    
-    # Fazer a interpolaÃ§Ã£o linear
-    itp = LinearInterpolation(malha_antiga, espaco_antigo)
-    espaco_novo = itp.(malha_nova)
-    
-    # Juntar a nova parte espacial com o parÃ¢metro final
-    return vcat(espaco_novo, parametro_final)
-end
 
 # # FunÃ§Ãµes de teste
 # function quadratic(x)
