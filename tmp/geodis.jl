@@ -3,7 +3,7 @@
 # Translation of tmp/geodis.for.
 # The values that the Fortran program requested interactively are fixed here.
 
-const NNPUN = 1000
+const NNPUN = 10000
 const NNDIM = 3
 
 Base.@kwdef struct Config
@@ -11,7 +11,7 @@ Base.@kwdef struct Config
     ndim::Int = 2
     perc::Float64 = 0.0
     petol::Float64 = 0.0
-    konmax::Int = 1000
+    konmax::Int = 5000
     continue_coordinate_search::Bool = true
     step::Float64 = 0.5
     delta::Float64 = 0.001
@@ -612,6 +612,7 @@ function main(config::Config = Config())
     n = config.ndim * config.npun
     lower = fill(-1.0e3, n)
     upper = fill(1.0e3, n)
+    nome = "tmp/geodis_NaN.txt"
 
     println("Number of points: ", config.npun)
     println("Dimension of the space: ", config.ndim)
@@ -638,7 +639,40 @@ function main(config::Config = Config())
     # Ploting the results
     x_plot = x[1:2:n]
     y_plot = x[2:2:n]
-    pl_SPG = scatter(x_plot, y_plot, label = "")
+    f_SPG = fun(problem, x)
+    g_SPG = zeros(n)
+    grad!(g_SPG, problem, x)
+    gnorm_SPG = norm(g_SPG)
+
+    open(nome, "w") do file
+        println(file, "Resultado obtido via SPG com funcao penalizada por 10E+26 quando x > 0.1y")
+        println(file, "Resultado apenas utilizando SPG")
+        println(file, "Resumo SPG")
+        println(file, "npun = $(config.npun)")
+        println(file, "ndim = $(config.ndim)")
+        println(file, "f_SPG = $f_SPG")
+        println(file, "||g_SPG|| = $gnorm_SPG")
+        println(file, "x_min = $(minimum(x_plot)) | x_max = $(maximum(x_plot))")
+        println(file, "y_min = $(minimum(y_plot)) | y_max = $(maximum(y_plot))")
+        println(file, "")
+        println(file, "metodo\tponto\tx\ty")
+        for i in eachindex(x_plot)
+            println(file, "SPG\t$i\t$(x_plot[i])\t$(y_plot[i])")
+        end
+        println(file, "---------------------------------------------------")
+        println(file, "---------------------------------------------------")
+        println(file, "---------------------------------------------------")
+    end
+
+    x_min, x_max = extrema(x_plot)
+    y_min, y_max = extrema(y_plot)
+    pl_SPG = scatter(
+        x_plot,
+        y_plot,
+        label = "",
+        xlims = (x_min, x_max),
+        ylims = (y_min, y_max),
+    )
 
     println("Solucao obtida por spgbox:")
     for j in 1:n
@@ -660,25 +694,52 @@ function main(config::Config = Config())
                   min_mesh_size = 1E-8*x,
                   lower_bound=lower,
                   upper_bound=upper)
-        pb.options.max_bb_eval = 1150
-
+        pb.options.max_bb_eval = 5000
+        ϵ = 10^-1
         result = solve(pb, x)
         x_new = result.x_sol
         x_plot = x_new[1:2:n]
         y_plot = x_new[2:2:n]
-        pl_MADS = scatter(x_plot, y_plot, label = "")
+        f_MADS = fun(problem, x_new)
+        g_MADS = zeros(n)
+        grad!(g_MADS, problem, x_new)
+        gnorm_MADS = norm(g_MADS)
+
+        open(nome, "a") do file
+            println(file, "Resultado obtido via MADS após aplicar SPG.")
+            println(file, "f_SPG = $f_SPG")
+            println(file, "||g_SPG|| = $gnorm_SPG")
+            println(file, "Resumo MADS")
+            println(file, "f_MADS = $f_MADS")
+            println(file, "||g_MADS|| = $gnorm_MADS")
+            println(file, "x_min = $(minimum(x_plot)) | x_max = $(maximum(x_plot))")
+            println(file, "y_min = $(minimum(y_plot)) | y_max = $(maximum(y_plot))")
+            println(file, "")
+            println(file, "metodo\tponto\tx\ty")
+            for i in eachindex(x_plot)
+                println(file, "MADS\t$i\t$(x_plot[i])\t$(y_plot[i])")
+            end
+        end
 
         x_min, x_max = extrema(x_plot)
         y_min, y_max = extrema(y_plot)
+
+        pl_MADS = scatter(
+            x_plot,
+            y_plot,
+            label = "",
+            xlims = (x_min, x_max),
+            ylims = (y_min, y_max),
+        )
         
-        xgrid = range(x_min, x_max, length = 300)
+        xgrid = range(x_min-ϵ, x_max+ϵ, length = 300)
         yline = 10 .* xgrid
         
         plot!(
             pl_MADS,
             xgrid,
             yline,
-            fillrange = y_max,
+            fillrange = y_max+ϵ,
             fillalpha = 0.25,
             label = "y ≥ 10x"
         )
@@ -689,12 +750,11 @@ function main(config::Config = Config())
             yline,
             linewidth = 2,
             label = "x = 0.1y"
-        )        
+        )
         
-        f = fun(problem, x_new)
+        plot!(pl_MADS, xlims = (x_min-ϵ, x_max+ϵ), ylims = (y_min-ϵ, y_max+ϵ))
+        
         # gn, aux = grad2(problem, x_new, f)
-        g = zeros(n)
-        grad!(g, problem, x_new)
 
         # println("Gradiente analitico e discreto, f, fmen, fmas:")
         # for j in 1:n
@@ -702,6 +762,9 @@ function main(config::Config = Config())
         #             " ", f, " ", aux[j, 3], " ", aux[j, 1])
         # end
     end
+
+    png(pl_MADS, "tmp/plot_MADS.png")
+    png(pl_SPG, "tmp/plot_SPG.png")
 
     return config.continue_coordinate_search ? (; problem, x, result, pl_SPG, pl_MADS) : (; problem, x, result, pl_SPG)
 end
