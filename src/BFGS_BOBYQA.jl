@@ -6,6 +6,18 @@ using LinearAlgebra
 include("obj_func.jl")
 include("aux_func.jl")
 
+const FIRST_ORDER_RESULTS_DIR = normpath(joinpath(@__DIR__, "..", "results", "first_order"))
+
+function penalidade_caixa_externa(x, lb, ub; rho=1.0e6)
+    penalidade = zero(eltype(x))
+    for i in eachindex(x)
+        abaixo = max(zero(x[i]), lb[i] - x[i])
+        acima = max(zero(x[i]), x[i] - ub[i])
+        penalidade += abaixo^2 + acima^2
+    end
+    return rho * penalidade
+end
+
 
 function safe_rand_manning(;n = 101)
     while true
@@ -22,21 +34,23 @@ function full_dim_problem(;
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
-    outer_iterations = 10,
+    penalty_weight = 1.0e6,
     f_calls_limit = 50,
     g_calls_limit = 20,
-    arquivo_aceitos = "results/full_dim_problem_pontos_aceitos.txt",
-    arquivo_avaliacoes = "results/full_dim_problem_avaliacoes.txt",
+    arquivo_aceitos = joinpath(FIRST_ORDER_RESULTS_DIR, "full_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(FIRST_ORDER_RESULTS_DIR, "full_dim_problem_avaliacoes.txt"),
 )
     n = length(x0)
     X = copy(float.(x0))
     limites_inferiores = fill(Float64(lb), n)
     limites_superiores = fill(Float64(ub), n)
-    arquivo_pontos = arquivo_em_results(arquivo_aceitos)
+    arquivo_pontos = normpath(arquivo_aceitos)
+    mkpath(dirname(arquivo_pontos))
 
     global n_calfun = 0
     global inicio_s = time()
-    global nome = arquivo_em_results(arquivo_avaliacoes)
+    global nome = normpath(arquivo_avaliacoes)
+    mkpath(dirname(nome))
     colunas_x = join(("x$i" for i in 1:n), "\t")
 
     open(nome, "w") do file
@@ -46,9 +60,10 @@ function full_dim_problem(;
 
     open(arquivo_pontos, "w") do file
         write(file, "Pontos aceitos no full_dim_problem\n")
+        write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
         write(file, "x0 = $(collect(X))\n")
         write(file, "lb = $lb | ub = $ub\n")
-        write(file, "iterations = $iterations | outer_iterations = $outer_iterations\n")
+        write(file, "iterations = $iterations | penalty_weight = $penalty_weight\n")
         write(file, "\niter\tf\tgnorm\t$colunas_x\n")
     end
 
@@ -65,10 +80,17 @@ function full_dim_problem(;
         end
         return valor
     end
+    f_penalizada(x_vars) = f_obj(x_vars) +
+                           penalidade_caixa_externa(
+                               x_vars,
+                               limites_inferiores,
+                               limites_superiores;
+                               rho=penalty_weight,
+                           )
 
-    cfg_bfgs = ForwardDiff.GradientConfig(f_obj, X, ForwardDiff.Chunk{n}())
+    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n}())
     function g_obj!(G, x_k)
-        ForwardDiff.gradient!(G, f_obj, x_k, cfg_bfgs)
+        ForwardDiff.gradient!(G, f_penalizada, x_k, cfg_bfgs)
         push!(x_gradientes, copy(float.(x_k)))
         push!(gnorm_gradientes, norm(G))
         return G
@@ -76,6 +98,7 @@ function full_dim_problem(;
 
     pontos_aceitos = Vector{Vector{Float64}}()
     valores_aceitos = Float64[]
+    valores_penalizados_aceitos = Float64[]
     gnorms_aceitos = Float64[]
 
     function valor_mais_recente(x_atual, pontos, valores, fallback)
@@ -95,6 +118,7 @@ function full_dim_problem(;
 
         push!(pontos_aceitos, x_atual)
         push!(valores_aceitos, f_atual)
+        push!(valores_penalizados_aceitos, Float64(estado.f_x))
         push!(gnorms_aceitos, gnorm_atual)
 
         open(arquivo_pontos, "a") do file
@@ -105,29 +129,35 @@ function full_dim_problem(;
     end
 
     resultado_bfgs = Optim.optimize(
-        f_obj,
+        f_penalizada,
         g_obj!,
-        limites_inferiores,
-        limites_superiores,
         X,
-        Fminbox(BFGS()),
+        BFGS(),
         Optim.Options(
             iterations = iterations,
-            outer_iterations = outer_iterations,
             f_calls_limit = f_calls_limit,
             g_calls_limit = g_calls_limit,
             callback = salva_ponto_aceito!,
         ),
     )
 
-    x_final = Optim.minimizer(resultado_bfgs)
-    f_final = Optim.minimum(resultado_bfgs)
+    if isempty(pontos_aceitos)
+        x_final = Optim.minimizer(resultado_bfgs)
+        f_final_penalizado = Optim.minimum(resultado_bfgs)
+        f_final = valor_mais_recente(x_final, x_avaliados, f_avaliados, f_final_penalizado)
+    else
+        melhor_indice = argmin(valores_penalizados_aceitos)
+        x_final = copy(pontos_aceitos[melhor_indice])
+        f_final = valores_aceitos[melhor_indice]
+        f_final_penalizado = valores_penalizados_aceitos[melhor_indice]
+    end
 
     open(arquivo_pontos, "a") do file
         write(file, "\nResumo final\n")
         write(file, "convergiu = $(Optim.converged(resultado_bfgs))\n")
         write(file, "iteracoes = $(Optim.iterations(resultado_bfgs))\n")
         write(file, "f_final = $f_final\n")
+        write(file, "f_final_penalizado = $f_final_penalizado\n")
         write(file, "x_final = $(collect(x_final))\n")
         write(file, "n_pontos_aceitos = $(length(pontos_aceitos))\n")
     end
@@ -149,21 +179,23 @@ function two_dim_problem(;
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
-    outer_iterations = 10,
+    penalty_weight = 1.0e6,
     f_calls_limit = 50,
     g_calls_limit = 20,
-    arquivo_aceitos = "results/two_dim_problem_pontos_aceitos.txt",
-    arquivo_avaliacoes = "results/two_dim_problem_avaliacoes.txt",
-)
+    arquivo_aceitos = joinpath(FIRST_ORDER_RESULTS_DIR, "BFGS_two_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(FIRST_ORDER_RESULTS_DIR, "BFGS_two_dim_problem_avaliacoes.txt"),
+    )
     n = length(x0)
     X = copy(float.(x0))
     limites_inferiores = fill(Float64(lb), n)
     limites_superiores = fill(Float64(ub), n)
-    arquivo_pontos = arquivo_em_results(arquivo_aceitos)
+    arquivo_pontos = normpath(arquivo_aceitos)
+    mkpath(dirname(arquivo_pontos))
 
     global n_calfun = 0
     global inicio_s = time()
-    global nome = arquivo_em_results(arquivo_avaliacoes)
+    global nome = normpath(arquivo_avaliacoes)
+    mkpath(dirname(nome))
 
     open(nome, "w") do file
         write(file, "Avaliacoes normais de quad_fun no two_dim_problem\n")
@@ -172,9 +204,10 @@ function two_dim_problem(;
 
     open(arquivo_pontos, "w") do file
         write(file, "Pontos aceitos no two_dim_problem\n")
+        write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
         write(file, "x0 = $(collect(X))\n")
         write(file, "lb = $lb | ub = $ub\n")
-        write(file, "iterations = $iterations | outer_iterations = $outer_iterations\n")
+        write(file, "iterations = $iterations | penalty_weight = $penalty_weight\n")
         write(file, "\niter\tf\tgnorm\tx1\tx2\n")
     end
 
@@ -191,10 +224,17 @@ function two_dim_problem(;
         end
         return valor
     end
+    f_penalizada(x_vars) = f_obj(x_vars) +
+                           penalidade_caixa_externa(
+                               x_vars,
+                               limites_inferiores,
+                               limites_superiores;
+                               rho=penalty_weight,
+                           )
 
-    cfg_bfgs = ForwardDiff.GradientConfig(f_obj, X, ForwardDiff.Chunk{n}())
+    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n}())
     function g_obj!(G, x_k)
-        ForwardDiff.gradient!(G, f_obj, x_k, cfg_bfgs)
+        ForwardDiff.gradient!(G, f_penalizada, x_k, cfg_bfgs)
         push!(x_gradientes, copy(float.(x_k)))
         push!(gnorm_gradientes, norm(G))
         return G
@@ -202,6 +242,7 @@ function two_dim_problem(;
 
     pontos_aceitos = Vector{Vector{Float64}}()
     valores_aceitos = Float64[]
+    valores_penalizados_aceitos = Float64[]
     gnorms_aceitos = Float64[]
 
     function valor_mais_recente(x_atual, pontos, valores, fallback)
@@ -221,6 +262,7 @@ function two_dim_problem(;
 
         push!(pontos_aceitos, x_atual)
         push!(valores_aceitos, f_atual)
+        push!(valores_penalizados_aceitos, Float64(estado.f_x))
         push!(gnorms_aceitos, gnorm_atual)
 
         open(arquivo_pontos, "a") do file
@@ -231,29 +273,35 @@ function two_dim_problem(;
     end
 
     resultado_bfgs = Optim.optimize(
-        f_obj,
+        f_penalizada,
         g_obj!,
-        limites_inferiores,
-        limites_superiores,
         X,
-        Fminbox(BFGS()),
+        BFGS(),
         Optim.Options(
             iterations = iterations,
-            outer_iterations = outer_iterations,
             f_calls_limit = f_calls_limit,
             g_calls_limit = g_calls_limit,
             callback = salva_ponto_aceito!,
         ),
     )
 
-    x_final = Optim.minimizer(resultado_bfgs)
-    f_final = Optim.minimum(resultado_bfgs)
+    if isempty(pontos_aceitos)
+        x_final = Optim.minimizer(resultado_bfgs)
+        f_final_penalizado = Optim.minimum(resultado_bfgs)
+        f_final = valor_mais_recente(x_final, x_avaliados, f_avaliados, f_final_penalizado)
+    else
+        melhor_indice = argmin(valores_penalizados_aceitos)
+        x_final = copy(pontos_aceitos[melhor_indice])
+        f_final = valores_aceitos[melhor_indice]
+        f_final_penalizado = valores_penalizados_aceitos[melhor_indice]
+    end
 
     open(arquivo_pontos, "a") do file
         write(file, "\nResumo final\n")
         write(file, "convergiu = $(Optim.converged(resultado_bfgs))\n")
         write(file, "iteracoes = $(Optim.iterations(resultado_bfgs))\n")
         write(file, "f_final = $f_final\n")
+        write(file, "f_final_penalizado = $f_final_penalizado\n")
         write(file, "x_final = $(collect(x_final))\n")
         write(file, "n_pontos_aceitos = $(length(pontos_aceitos))\n")
     end
@@ -269,6 +317,10 @@ function two_dim_problem(;
         arquivo_avaliacoes = nome,
     )
 end
+
+
+
+
 
 
 function minimizar_L_sv_bfgs(

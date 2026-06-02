@@ -1,8 +1,0 @@
-Metodo: BFGS em L_sv
-lambda fixo = 0.0
-rho fixo = 10.0
-tmax = 5.0
-lb = 0.0 | ub = 0.5
-bfgs_iterations = 10 | fminbox_outer_iterations = 10 | f_calls_limit = 50 | g_calls_limit = 20
-restarts = 1
-tempo_s	n_calfun	RMSD	sum_x_xref2

@@ -73,4 +73,3 @@ end
 # ng = fill(0.08, n_man + 1)
 # run_L_sv_bfgs_bobyqa_tmax = true
 # result = run_L_sv_bfgs_bobyqa_tmax ? testar_L_sv_bfgs_bobyqa_tmax(ng) : ng
-

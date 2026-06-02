@@ -1,0 +1,4 @@
+Avaliacoes normais de quad_fun no full_dim_problem
+tempo_s	n_calfun	RMSD	erro_quadratico_total
+52.937	1	0.26276702835241766	1.7952092909181672
+52.948	2	1.0000000000000002e27	3.380000000000001e56
