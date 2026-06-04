@@ -8,6 +8,12 @@ include("aux_func.jl")
 
 const FIRST_ORDER_RESULTS_DIR = normpath(joinpath(@__DIR__, "..", "results", "first_order"))
 
+function first_order_results_dir_for_tmax(tmax)
+    tmax_float = Float64(tmax)
+    pasta = isinteger(tmax_float) ? "$(Int(round(tmax_float)))_days" : "$(label_tmax(tmax_float))_days"
+    return joinpath(FIRST_ORDER_RESULTS_DIR, pasta)
+end
+
 function penalidade_caixa_externa(x, lb, ub; rho=1.0e6)
     penalidade = zero(eltype(x))
     for i in eachindex(x)
@@ -31,14 +37,15 @@ end
 
 function full_dim_problem(;
     x0 = collect(range(0.1, 0.2, length = 101)),
+    tmax = 5.0,
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
     penalty_weight = 1.0e6,
     f_calls_limit = 50,
     g_calls_limit = 20,
-    arquivo_aceitos = joinpath(FIRST_ORDER_RESULTS_DIR, "full_dim_problem_pontos_aceitos.txt"),
-    arquivo_avaliacoes = joinpath(FIRST_ORDER_RESULTS_DIR, "full_dim_problem_avaliacoes.txt"),
+    arquivo_aceitos = joinpath(first_order_results_dir_for_tmax(tmax), "full_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(first_order_results_dir_for_tmax(tmax), "full_dim_problem_avaliacoes.txt"),
 )
     n = length(x0)
     X = copy(float.(x0))
@@ -61,6 +68,7 @@ function full_dim_problem(;
     open(arquivo_pontos, "w") do file
         write(file, "Pontos aceitos no full_dim_problem\n")
         write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
+        write(file, "tmax = $tmax\n")
         write(file, "x0 = $(collect(X))\n")
         write(file, "lb = $lb | ub = $ub\n")
         write(file, "iterations = $iterations | penalty_weight = $penalty_weight\n")
@@ -73,7 +81,7 @@ function full_dim_problem(;
     gnorm_gradientes = Float64[]
 
     function f_obj(x_vars)
-        valor = quad_fun(x_vars)
+        valor = quad_fun(x_vars; tmax=tmax)
         if !(eltype(x_vars) <: ForwardDiff.Dual)
             push!(x_avaliados, copy(float.(x_vars)))
             push!(f_avaliados, Float64(valor))
@@ -176,14 +184,15 @@ end
 
 function two_dim_problem(;
     x0 = [0.1; 0.20],
+    tmax = 5.0,
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
     penalty_weight = 1.0e6,
     f_calls_limit = 50,
     g_calls_limit = 20,
-    arquivo_aceitos = joinpath(FIRST_ORDER_RESULTS_DIR, "BFGS_two_dim_problem_pontos_aceitos.txt"),
-    arquivo_avaliacoes = joinpath(FIRST_ORDER_RESULTS_DIR, "BFGS_two_dim_problem_avaliacoes.txt"),
+    arquivo_aceitos = joinpath(first_order_results_dir_for_tmax(tmax), "BFGS_two_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(first_order_results_dir_for_tmax(tmax), "BFGS_two_dim_problem_avaliacoes.txt"),
     )
     n = length(x0)
     X = copy(float.(x0))
@@ -205,6 +214,7 @@ function two_dim_problem(;
     open(arquivo_pontos, "w") do file
         write(file, "Pontos aceitos no two_dim_problem\n")
         write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
+        write(file, "tmax = $tmax\n")
         write(file, "x0 = $(collect(X))\n")
         write(file, "lb = $lb | ub = $ub\n")
         write(file, "iterations = $iterations | penalty_weight = $penalty_weight\n")
@@ -217,7 +227,7 @@ function two_dim_problem(;
     gnorm_gradientes = Float64[]
 
     function f_obj(x_vars)
-        valor = quad_fun(x_vars)
+        valor = quad_fun(x_vars; tmax=tmax)
         if !(eltype(x_vars) <: ForwardDiff.Dual)
             push!(x_avaliados, copy(float.(x_vars)))
             push!(f_avaliados, Float64(valor))
