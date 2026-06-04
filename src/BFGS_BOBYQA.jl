@@ -7,11 +7,18 @@ include("obj_func.jl")
 include("aux_func.jl")
 
 const FIRST_ORDER_RESULTS_DIR = normpath(joinpath(@__DIR__, "..", "results", "first_order"))
+const HYBRID_RESULTS_DIR = normpath(joinpath(@__DIR__, "..", "results", "hybrid"))
 
 function first_order_results_dir_for_tmax(tmax)
     tmax_float = Float64(tmax)
     pasta = isinteger(tmax_float) ? "$(Int(round(tmax_float)))_days" : "$(label_tmax(tmax_float))_days"
     return joinpath(FIRST_ORDER_RESULTS_DIR, pasta)
+end
+
+function hybrid_results_dir_for_tmax(tmax)
+    tmax_float = Float64(tmax)
+    pasta = isinteger(tmax_float) ? "$(Int(round(tmax_float)))_days" : "$(label_tmax(tmax_float))_days"
+    return joinpath(HYBRID_RESULTS_DIR, pasta)
 end
 
 function penalidade_caixa_externa(x, lb, ub; rho=1.0e6)
@@ -329,6 +336,417 @@ function two_dim_problem(;
 end
 
 
+
+function BFGS_BOBYQA_full_dim_problem(;
+    x0 = collect(range(0.1, 0.2, length = 101)),
+    tmax = 5.0,
+    lb = 0.0,
+    ub = 0.5,
+    iterations = 10,
+    penalty_weight = 1.0e6,
+    f_calls_limit = 50,
+    g_calls_limit = 20,
+    rhobeg = 0.05,
+    rhoend = 0.001,
+    maxeval = 500,
+    arquivo_aceitos = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_full_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_full_dim_problem_avaliacoes.txt"),
+)
+    n = length(x0)
+    X = copy(float.(x0))
+    limites_inferiores = fill(Float64(lb), n)
+    limites_superiores = fill(Float64(ub), n)
+    arquivo_pontos = normpath(arquivo_aceitos)
+    mkpath(dirname(arquivo_pontos))
+
+    global n_calfun = 0
+    global inicio_s = time()
+    global nome = normpath(arquivo_avaliacoes)
+    mkpath(dirname(nome))
+    colunas_x = join(("x$i" for i in 1:n), "\t")
+    npt = 2 * n + 1
+
+    open(nome, "w") do file
+        write(file, "Avaliacoes normais de quad_fun no BFGS_BOBYQA_full_dim_problem\n")
+        write(file, "tempo_s\tn_calfun\tRMSD\terro_quadratico_total\n")
+    end
+
+    open(arquivo_pontos, "w") do file
+        write(file, "Pontos aceitos no BFGS_BOBYQA_full_dim_problem\n")
+        write(file, "Metodo = BFGS seguido de BOBYQA com caixa\n")
+        write(file, "tmax = $tmax\n")
+        write(file, "x0 = $(collect(X))\n")
+        write(file, "lb = $lb | ub = $ub\n")
+        write(file, "iterations = $iterations | penalty_weight = $penalty_weight | rhobeg = $rhobeg | rhoend = $rhoend | maxeval = $maxeval\n")
+        write(file, "\niter\tf\tgnorm\t$colunas_x\n")
+    end
+
+    x_avaliados = Vector{Vector{Float64}}()
+    f_avaliados = Float64[]
+    x_gradientes = Vector{Vector{Float64}}()
+    gnorm_gradientes = Float64[]
+
+    function f_obj(x_vars)
+        valor = quad_fun(x_vars; tmax=tmax)
+        if !(eltype(x_vars) <: ForwardDiff.Dual)
+            push!(x_avaliados, copy(float.(x_vars)))
+            push!(f_avaliados, Float64(valor))
+        end
+        return valor
+    end
+    f_penalizada(x_vars) = f_obj(x_vars) +
+                           penalidade_caixa_externa(
+                               x_vars,
+                               limites_inferiores,
+                               limites_superiores;
+                               rho=penalty_weight,
+                           )
+
+    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n}())
+    function g_obj!(G, x_k)
+        ForwardDiff.gradient!(G, f_penalizada, x_k, cfg_bfgs)
+        push!(x_gradientes, copy(float.(x_k)))
+        push!(gnorm_gradientes, norm(G))
+        return G
+    end
+
+    pontos_aceitos = Vector{Vector{Float64}}()
+    valores_aceitos = Float64[]
+    valores_penalizados_aceitos = Float64[]
+    gnorms_aceitos = Float64[]
+
+    function valor_mais_recente(x_atual, pontos, valores, fallback)
+        for i in length(pontos):-1:1
+            if norm(x_atual - pontos[i]) <= 1.0e-10
+                return valores[i]
+            end
+        end
+        return fallback
+    end
+
+    function salva_ponto_aceito!(estado)
+        x_atual = copy(estado.x)
+
+        f_atual = valor_mais_recente(x_atual, x_avaliados, f_avaliados, estado.f_x)
+        gnorm_atual = valor_mais_recente(x_atual, x_gradientes, gnorm_gradientes, norm(estado.g_x))
+
+        push!(pontos_aceitos, x_atual)
+        push!(valores_aceitos, f_atual)
+        push!(valores_penalizados_aceitos, Float64(estado.f_x))
+        push!(gnorms_aceitos, gnorm_atual)
+
+        open(arquivo_pontos, "a") do file
+            iter = length(pontos_aceitos) - 1
+            write(file, "$iter\t$f_atual\t$gnorm_atual\t$(join(x_atual, "\t"))\n")
+        end
+        return false
+    end
+
+    resultado_bfgs = Optim.optimize(
+        f_penalizada,
+        g_obj!,
+        X,
+        BFGS(),
+        Optim.Options(
+            iterations = iterations,
+            f_calls_limit = f_calls_limit,
+            g_calls_limit = g_calls_limit,
+            callback = salva_ponto_aceito!,
+        ),
+    )
+
+    if isempty(pontos_aceitos)
+        x_final = Optim.minimizer(resultado_bfgs)
+        f_final_penalizado = Optim.minimum(resultado_bfgs)
+        f_final = valor_mais_recente(x_final, x_avaliados, f_avaliados, f_final_penalizado)
+    else
+        melhor_indice = argmin(valores_penalizados_aceitos)
+        x_final = copy(pontos_aceitos[melhor_indice])
+        f_final = valores_aceitos[melhor_indice]
+        f_final_penalizado = valores_penalizados_aceitos[melhor_indice]
+    end
+
+    open(arquivo_pontos, "a") do file
+        write(file, "\nResumo BFGS\n")
+        write(file, "convergiu_bfgs = $(Optim.converged(resultado_bfgs))\n")
+        write(file, "iteracoes_bfgs = $(Optim.iterations(resultado_bfgs))\n")
+        write(file, "f_final_bfgs = $f_final\n")
+        write(file, "f_final_penalizado_bfgs = $f_final_penalizado\n")
+        write(file, "x_final_bfgs = $(collect(x_final))\n")
+        write(file, "n_pontos_aceitos_bfgs = $(length(pontos_aceitos))\n")
+        write(file, "\nEtapa BOBYQA\n")
+        write(file, "x_inicial_bobyqa = $(collect(x_final))\n")
+        write(file, "\niter_bobyqa\tf\t$colunas_x\n")
+    end
+
+    open(nome, "a") do file
+        write(file, "\n# Etapa BOBYQA\n")
+    end
+
+    pontos_bobyqa = Vector{Vector{Float64}}()
+    valores_bobyqa = Float64[]
+    objetivo_bobyqa(x, grad) = begin
+        valor = quad_fun(x; tmax=tmax)
+        x_atual = copy(float.(x))
+        push!(pontos_bobyqa, x_atual)
+        push!(valores_bobyqa, Float64(valor))
+        open(arquivo_pontos, "a") do file
+            iter = length(pontos_bobyqa) - 1
+            write(file, "$iter\t$valor\t$(join(x_atual, "\t"))\n")
+        end
+        return valor
+    end
+
+    opt = Opt(:LN_BOBYQA, n)
+    opt.lower_bounds = limites_inferiores
+    opt.upper_bounds = limites_superiores
+    opt.initial_step = fill(Float64(rhobeg), n)
+    opt.xtol_abs = fill(Float64(rhoend), n)
+    opt.maxeval = maxeval
+    opt.population = npt
+    opt.min_objective = objetivo_bobyqa
+
+    n_calfun_inicio_bobyqa = n_calfun
+    tempo_inicio_bobyqa = time()
+    f_bobyqa, x_bobyqa, status_bobyqa = NLopt.optimize(opt, x_final)
+    tempo_bobyqa = time() - tempo_inicio_bobyqa
+    avaliacoes_bobyqa = n_calfun - n_calfun_inicio_bobyqa
+    avaliacoes_nlopt = opt.numevals
+
+    open(arquivo_pontos, "a") do file
+        write(file, "\nResumo BOBYQA\n")
+        write(file, "status_bobyqa = $status_bobyqa\n")
+        write(file, "f_final_bobyqa = $f_bobyqa\n")
+        write(file, "x_final_bobyqa = $(collect(x_bobyqa))\n")
+        write(file, "avaliacoes_bobyqa = $avaliacoes_bobyqa\n")
+        write(file, "avaliacoes_nlopt_bobyqa = $avaliacoes_nlopt\n")
+        write(file, "tempo_bobyqa_s = $(round(tempo_bobyqa, digits=3))\n")
+    end
+
+    return (;
+        resultado_bfgs = resultado_bfgs,
+        x_bfgs = x_final,
+        f_bfgs = f_final,
+        x_final = x_bobyqa,
+        f_final = f_bobyqa,
+        pontos_aceitos_bfgs = pontos_aceitos,
+        pontos_aceitos_bobyqa = pontos_bobyqa,
+        valores_aceitos_bfgs = valores_aceitos,
+        valores_aceitos_bobyqa = valores_bobyqa,
+        gnorms_aceitos_bfgs = gnorms_aceitos,
+        arquivo_pontos,
+        arquivo_avaliacoes = nome,
+        status_bobyqa = status_bobyqa,
+        avaliacoes_bobyqa = avaliacoes_bobyqa,
+        avaliacoes_nlopt_bobyqa = avaliacoes_nlopt,
+        tempo_bobyqa_s = tempo_bobyqa,
+    )
+end
+
+function BFGS_BOBYQA_two_dim_problem(;
+    x0 = [0.1; 0.20],
+    tmax = 5.0,
+    lb = 0.0,
+    ub = 0.5,
+    iterations = 10,
+    penalty_weight = 1.0e6,
+    f_calls_limit = 50,
+    g_calls_limit = 20,
+    rhobeg = 0.05,
+    rhoend = 0.001,
+    maxeval = 500,
+    arquivo_aceitos = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_two_dim_problem_pontos_aceitos.txt"),
+    arquivo_avaliacoes = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_two_dim_problem_avaliacoes.txt"),
+    )
+    n = length(x0)
+    X = copy(float.(x0))
+    limites_inferiores = fill(Float64(lb), n)
+    limites_superiores = fill(Float64(ub), n)
+    arquivo_pontos = normpath(arquivo_aceitos)
+    mkpath(dirname(arquivo_pontos))
+
+    global n_calfun = 0
+    global inicio_s = time()
+    global nome = normpath(arquivo_avaliacoes)
+    mkpath(dirname(nome))
+    npt = 2 * n + 1
+
+    open(nome, "w") do file
+        write(file, "Avaliacoes normais de quad_fun no BFGS_BOBYQA_two_dim_problem\n")
+        write(file, "tempo_s\tn_calfun\tRMSD\terro_quadratico_total\n")
+    end
+
+    open(arquivo_pontos, "w") do file
+        write(file, "Pontos aceitos no BFGS_BOBYQA_two_dim_problem\n")
+        write(file, "Metodo = BFGS seguido de BOBYQA com caixa\n")
+        write(file, "tmax = $tmax\n")
+        write(file, "x0 = $(collect(X))\n")
+        write(file, "lb = $lb | ub = $ub\n")
+        write(file, "iterations = $iterations | penalty_weight = $penalty_weight | rhobeg = $rhobeg | rhoend = $rhoend | maxeval = $maxeval\n")
+        write(file, "\niter\tf\tgnorm\tx1\tx2\n")
+    end
+
+    x_avaliados = Vector{Vector{Float64}}()
+    f_avaliados = Float64[]
+    x_gradientes = Vector{Vector{Float64}}()
+    gnorm_gradientes = Float64[]
+
+    function f_obj(x_vars)
+        valor = quad_fun(x_vars; tmax=tmax)
+        if !(eltype(x_vars) <: ForwardDiff.Dual)
+            push!(x_avaliados, copy(float.(x_vars)))
+            push!(f_avaliados, Float64(valor))
+        end
+        return valor
+    end
+    f_penalizada(x_vars) = f_obj(x_vars) +
+                           penalidade_caixa_externa(
+                               x_vars,
+                               limites_inferiores,
+                               limites_superiores;
+                               rho=penalty_weight,
+                           )
+
+    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n}())
+    function g_obj!(G, x_k)
+        ForwardDiff.gradient!(G, f_penalizada, x_k, cfg_bfgs)
+        push!(x_gradientes, copy(float.(x_k)))
+        push!(gnorm_gradientes, norm(G))
+        return G
+    end
+
+    pontos_aceitos = Vector{Vector{Float64}}()
+    valores_aceitos = Float64[]
+    valores_penalizados_aceitos = Float64[]
+    gnorms_aceitos = Float64[]
+
+    function valor_mais_recente(x_atual, pontos, valores, fallback)
+        for i in length(pontos):-1:1
+            if norm(x_atual - pontos[i]) <= 1.0e-10
+                return valores[i]
+            end
+        end
+        return fallback
+    end
+
+    function salva_ponto_aceito!(estado)
+        x_atual = copy(estado.x)
+
+        f_atual = valor_mais_recente(x_atual, x_avaliados, f_avaliados, estado.f_x)
+        gnorm_atual = valor_mais_recente(x_atual, x_gradientes, gnorm_gradientes, norm(estado.g_x))
+
+        push!(pontos_aceitos, x_atual)
+        push!(valores_aceitos, f_atual)
+        push!(valores_penalizados_aceitos, Float64(estado.f_x))
+        push!(gnorms_aceitos, gnorm_atual)
+
+        open(arquivo_pontos, "a") do file
+            iter = length(pontos_aceitos) - 1
+            write(file, "$iter\t$f_atual\t$gnorm_atual\t$(x_atual[1])\t$(x_atual[2])\n")
+        end
+        return false
+    end
+
+    resultado_bfgs = Optim.optimize(
+        f_penalizada,
+        g_obj!,
+        X,
+        BFGS(),
+        Optim.Options(
+            iterations = iterations,
+            f_calls_limit = f_calls_limit,
+            g_calls_limit = g_calls_limit,
+            callback = salva_ponto_aceito!,
+        ),
+    )
+
+    if isempty(pontos_aceitos)
+        x_final = Optim.minimizer(resultado_bfgs)
+        f_final_penalizado = Optim.minimum(resultado_bfgs)
+        f_final = valor_mais_recente(x_final, x_avaliados, f_avaliados, f_final_penalizado)
+    else
+        melhor_indice = argmin(valores_penalizados_aceitos)
+        x_final = copy(pontos_aceitos[melhor_indice])
+        f_final = valores_aceitos[melhor_indice]
+        f_final_penalizado = valores_penalizados_aceitos[melhor_indice]
+    end
+
+    open(arquivo_pontos, "a") do file
+        write(file, "\nResumo BFGS\n")
+        write(file, "convergiu_bfgs = $(Optim.converged(resultado_bfgs))\n")
+        write(file, "iteracoes_bfgs = $(Optim.iterations(resultado_bfgs))\n")
+        write(file, "f_final_bfgs = $f_final\n")
+        write(file, "f_final_penalizado_bfgs = $f_final_penalizado\n")
+        write(file, "x_final_bfgs = $(collect(x_final))\n")
+        write(file, "n_pontos_aceitos_bfgs = $(length(pontos_aceitos))\n")
+        write(file, "\nEtapa BOBYQA\n")
+        write(file, "x_inicial_bobyqa = $(collect(x_final))\n")
+        write(file, "\niter_bobyqa\tf\tx1\tx2\n")
+    end
+
+    open(nome, "a") do file
+        write(file, "\n# Etapa BOBYQA\n")
+    end
+
+    pontos_bobyqa = Vector{Vector{Float64}}()
+    valores_bobyqa = Float64[]
+    objetivo_bobyqa(x, grad) = begin
+        valor = quad_fun(x; tmax=tmax)
+        x_atual = copy(float.(x))
+        push!(pontos_bobyqa, x_atual)
+        push!(valores_bobyqa, Float64(valor))
+        open(arquivo_pontos, "a") do file
+            iter = length(pontos_bobyqa) - 1
+            write(file, "$iter\t$valor\t$(x_atual[1])\t$(x_atual[2])\n")
+        end
+        return valor
+    end
+
+    opt = Opt(:LN_BOBYQA, n)
+    opt.lower_bounds = limites_inferiores
+    opt.upper_bounds = limites_superiores
+    opt.initial_step = fill(Float64(rhobeg), n)
+    opt.xtol_abs = fill(Float64(rhoend), n)
+    opt.maxeval = maxeval
+    opt.population = npt
+    opt.min_objective = objetivo_bobyqa
+
+    n_calfun_inicio_bobyqa = n_calfun
+    tempo_inicio_bobyqa = time()
+    f_bobyqa, x_bobyqa, status_bobyqa = NLopt.optimize(opt, x_final)
+    tempo_bobyqa = time() - tempo_inicio_bobyqa
+    avaliacoes_bobyqa = n_calfun - n_calfun_inicio_bobyqa
+    avaliacoes_nlopt = opt.numevals
+
+    open(arquivo_pontos, "a") do file
+        write(file, "\nResumo BOBYQA\n")
+        write(file, "status_bobyqa = $status_bobyqa\n")
+        write(file, "f_final_bobyqa = $f_bobyqa\n")
+        write(file, "x_final_bobyqa = $(collect(x_bobyqa))\n")
+        write(file, "avaliacoes_bobyqa = $avaliacoes_bobyqa\n")
+        write(file, "avaliacoes_nlopt_bobyqa = $avaliacoes_nlopt\n")
+        write(file, "tempo_bobyqa_s = $(round(tempo_bobyqa, digits=3))\n")
+    end
+
+    return (;
+        resultado_bfgs = resultado_bfgs,
+        x_bfgs = x_final,
+        f_bfgs = f_final,
+        x_final = x_bobyqa,
+        f_final = f_bobyqa,
+        pontos_aceitos_bfgs = pontos_aceitos,
+        pontos_aceitos_bobyqa = pontos_bobyqa,
+        valores_aceitos_bfgs = valores_aceitos,
+        valores_aceitos_bobyqa = valores_bobyqa,
+        gnorms_aceitos_bfgs = gnorms_aceitos,
+        arquivo_pontos,
+        arquivo_avaliacoes = nome,
+        status_bobyqa = status_bobyqa,
+        avaliacoes_bobyqa = avaliacoes_bobyqa,
+        avaliacoes_nlopt_bobyqa = avaliacoes_nlopt,
+        tempo_bobyqa_s = tempo_bobyqa,
+    )
+end
 
 
 
