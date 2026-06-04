@@ -99,7 +99,7 @@ end
 
 
 function bobyqa_full_dim_problem(;
-    x0 = collect(range(0.1, 0.2, length = 101)),
+    x0 = collect(range(0.2, 0.06, length = 101)),
     tmax = 5.0,
     lb = 0.0,
     ub = 0.5,
@@ -124,7 +124,7 @@ function bobyqa_full_dim_problem(;
 end
 
 function bobyqa_two_dim_problem(;
-    x0 = [0.1; 0.20],
+    x0 = [0.2; 0.06],
     tmax = 5.0,
     lb = 0.0,
     ub = 0.5,
