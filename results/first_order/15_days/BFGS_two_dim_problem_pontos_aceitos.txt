@@ -1,17 +1,18 @@
 Pontos aceitos no two_dim_problem
 Metodo = BFGS() com penalidade externa de caixa
 tmax = 15.0
-x0 = [0.1, 0.2]
+x0 = [0.2, 0.06]
 lb = 0.0 | ub = 0.5
 iterations = 10 | penalty_weight = 1.0e6
 
 iter	f	gnorm	x1	x2
-0	3.380000000000001e56	0.0	0.1	0.2
+0	43.245060300744186	515.5043463714829	0.2	0.06
+1	23.752278369173478	315.0253599844177	0.1730464152570906	0.1027602483480951
 
 Resumo final
-convergiu = true
-iteracoes = 0
-f_final = 3.380000000000001e56
-f_final_penalizado = 3.380000000000001e56
-x_final = [0.1, 0.2]
-n_pontos_aceitos = 1
+convergiu = false
+iteracoes = 2
+f_final = 23.752278369173478
+f_final_penalizado = 23.752278369173478
+x_final = [0.1730464152570906, 0.1027602483480951]
+n_pontos_aceitos = 2
