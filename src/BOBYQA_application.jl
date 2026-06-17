@@ -22,12 +22,15 @@ function executar_bobyqa_problem(;
     X = copy(float.(x0))
     limites_inferiores = fill(Float64(lb), n)
     limites_superiores = fill(Float64(ub), n)
-    arquivo_pontos = arquivo_em_results(arquivo_aceitos)
+    arquivo_pontos = normpath(arquivo_aceitos)
+    nome_avaliacoes = normpath(arquivo_avaliacoes)
+    mkpath(dirname(arquivo_pontos))
+    mkpath(dirname(nome_avaliacoes))
     colunas_x = join(("x$i" for i in 1:n), "\t")
 
     global n_calfun = 0
     global inicio_s = time()
-    global nome = arquivo_em_results(arquivo_avaliacoes)
+    global nome = nome_avaliacoes
 
     open(nome, "w") do file
         write(file, "Avaliacoes normais de quad_fun no $problem_label\n")
@@ -105,7 +108,7 @@ function bobyqa_full_dim_problem(;
     ub = 0.5,
     rhobeg = 0.05,
     rhoend = 0.001,
-    maxeval = 500,
+    maxeval = 1000,
     arquivo_aceitos = joinpath(derivative_free_results_dir_for_tmax(tmax), "BOBYQA_full_dim_problem_pontos_aceitos.txt"),
     arquivo_avaliacoes = joinpath(derivative_free_results_dir_for_tmax(tmax), "BOBYQA_full_dim_problem_avaliacoes.txt"),
     )

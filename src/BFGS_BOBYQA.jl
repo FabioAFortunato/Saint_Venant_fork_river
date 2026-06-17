@@ -2,6 +2,7 @@ using Optim
 using NLopt
 using ForwardDiff
 using LinearAlgebra
+using LineSearches
 
 include("obj_func.jl")
 include("aux_func.jl")
@@ -21,30 +22,11 @@ function hybrid_results_dir_for_tmax(tmax)
     return joinpath(HYBRID_RESULTS_DIR, pasta)
 end
 
-function penalidade_caixa_externa(x, lb, ub; rho=1.0e6)
-    penalidade = zero(eltype(x))
-    for i in eachindex(x)
-        abaixo = max(zero(x[i]), lb[i] - x[i])
-        acima = max(zero(x[i]), x[i] - ub[i])
-        penalidade += abaixo^2 + acima^2
-    end
-    return rho * penalidade
-end
 
-
-function safe_rand_manning(;n = 101)
-    while true
-        x = 0.3 .* rand(n)
-        val = quad_fun(x)
-        if val <=10.0
-            return x            
-        end
-    end
-end
 
 function full_dim_problem(;
-    x0 = collect(range(0.2, 0.06, length = 101)),
-    tmax = 5.0,
+    x0 = collect(range(0.08, 0.08, length = 2)),
+    tmax = 15.0,
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
@@ -74,11 +56,11 @@ function full_dim_problem(;
 
     open(arquivo_pontos, "w") do file
         write(file, "Pontos aceitos no full_dim_problem\n")
-        write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
+        write(file, "Metodo = Fminbox(BFGS()) com caixa\n")
         write(file, "tmax = $tmax\n")
         write(file, "x0 = $(collect(X))\n")
         write(file, "lb = $lb | ub = $ub\n")
-        write(file, "iterations = $iterations | penalty_weight = $penalty_weight\n")
+        write(file, "iterations = $iterations\n")
         write(file, "\niter\tf\tgnorm\t$colunas_x\n")
     end
 
@@ -143,11 +125,13 @@ function full_dim_problem(;
         return false
     end
 
+    metodo_bfgs = BFGS()
+    
     resultado_bfgs = Optim.optimize(
         f_penalizada,
         g_obj!,
         X,
-        BFGS(),
+        metodo_bfgs,
         Optim.Options(
             iterations = iterations,
             f_calls_limit = f_calls_limit,
@@ -338,7 +322,7 @@ end
 
 
 function BFGS_BOBYQA_full_dim_problem(;
-    x0 = collect(range(0.2, 0.06, length = 101)),
+    x0 = collect(range(0.2, 0.06, length = 10)),
     tmax = 5.0,
     lb = 0.0,
     ub = 0.5,
@@ -544,8 +528,9 @@ function BFGS_BOBYQA_full_dim_problem(;
 end
 
 function BFGS_BOBYQA_two_dim_problem(;
-    x0 = [0.2; 0.06],
+    x0 = fill(0.08, 10),
     tmax = 5.0,
+    bobyqa_dim = 10,
     lb = 0.0,
     ub = 0.5,
     iterations = 10,
@@ -558,10 +543,10 @@ function BFGS_BOBYQA_two_dim_problem(;
     arquivo_aceitos = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_two_dim_problem_pontos_aceitos.txt"),
     arquivo_avaliacoes = joinpath(hybrid_results_dir_for_tmax(tmax), "BFGS_BOBYQA_two_dim_problem_avaliacoes.txt"),
     )
-    n = length(x0)
+    n_bfgs = length(x0)
     X = copy(float.(x0))
-    limites_inferiores = fill(Float64(lb), n)
-    limites_superiores = fill(Float64(ub), n)
+    limites_inferiores_bfgs = fill(Float64(lb), n_bfgs)
+    limites_superiores_bfgs = fill(Float64(ub), n_bfgs)
     arquivo_pontos = normpath(arquivo_aceitos)
     mkpath(dirname(arquivo_pontos))
 
@@ -569,7 +554,9 @@ function BFGS_BOBYQA_two_dim_problem(;
     global inicio_s = time()
     global nome = normpath(arquivo_avaliacoes)
     mkpath(dirname(nome))
-    npt = 2 * n + 1
+    colunas_x_bfgs = join(("x$i" for i in 1:n_bfgs), "\t")
+    colunas_x_bobyqa = join(("x$i" for i in 1:bobyqa_dim), "\t")
+    npt_bobyqa = 2 * bobyqa_dim + 1
 
     open(nome, "w") do file
         write(file, "Avaliacoes normais de quad_fun no BFGS_BOBYQA_two_dim_problem\n")
@@ -581,9 +568,10 @@ function BFGS_BOBYQA_two_dim_problem(;
         write(file, "Metodo = BFGS seguido de BOBYQA com caixa\n")
         write(file, "tmax = $tmax\n")
         write(file, "x0 = $(collect(X))\n")
+        write(file, "dim_bfgs = $n_bfgs | dim_bobyqa = $bobyqa_dim\n")
         write(file, "lb = $lb | ub = $ub\n")
         write(file, "iterations = $iterations | penalty_weight = $penalty_weight | rhobeg = $rhobeg | rhoend = $rhoend | maxeval = $maxeval\n")
-        write(file, "\niter\tf\tgnorm\tx1\tx2\n")
+        write(file, "\niter\tf\tgnorm\t$colunas_x_bfgs\n")
     end
 
     x_avaliados = Vector{Vector{Float64}}()
@@ -602,12 +590,12 @@ function BFGS_BOBYQA_two_dim_problem(;
     f_penalizada(x_vars) = f_obj(x_vars) +
                            penalidade_caixa_externa(
                                x_vars,
-                               limites_inferiores,
-                               limites_superiores;
+                               limites_inferiores_bfgs,
+                               limites_superiores_bfgs;
                                rho=penalty_weight,
                            )
 
-    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n}())
+    cfg_bfgs = ForwardDiff.GradientConfig(f_penalizada, X, ForwardDiff.Chunk{n_bfgs}())
     function g_obj!(G, x_k)
         ForwardDiff.gradient!(G, f_penalizada, x_k, cfg_bfgs)
         push!(x_gradientes, copy(float.(x_k)))
@@ -642,7 +630,7 @@ function BFGS_BOBYQA_two_dim_problem(;
 
         open(arquivo_pontos, "a") do file
             iter = length(pontos_aceitos) - 1
-            write(file, "$iter\t$f_atual\t$gnorm_atual\t$(x_atual[1])\t$(x_atual[2])\n")
+            write(file, "$iter\t$f_atual\t$gnorm_atual\t$(join(x_atual, "\t"))\n")
         end
         return false
     end
@@ -671,6 +659,10 @@ function BFGS_BOBYQA_two_dim_problem(;
         f_final_penalizado = valores_penalizados_aceitos[melhor_indice]
     end
 
+    x_inicial_bobyqa = expande_dimensao(x_final, bobyqa_dim)
+    limites_inferiores_bobyqa = fill(Float64(lb), bobyqa_dim)
+    limites_superiores_bobyqa = fill(Float64(ub), bobyqa_dim)
+
     open(arquivo_pontos, "a") do file
         write(file, "\nResumo BFGS\n")
         write(file, "convergiu_bfgs = $(Optim.converged(resultado_bfgs))\n")
@@ -680,8 +672,8 @@ function BFGS_BOBYQA_two_dim_problem(;
         write(file, "x_final_bfgs = $(collect(x_final))\n")
         write(file, "n_pontos_aceitos_bfgs = $(length(pontos_aceitos))\n")
         write(file, "\nEtapa BOBYQA\n")
-        write(file, "x_inicial_bobyqa = $(collect(x_final))\n")
-        write(file, "\niter_bobyqa\tf\tx1\tx2\n")
+        write(file, "x_inicial_bobyqa = $(collect(x_inicial_bobyqa))\n")
+        write(file, "\niter_bobyqa\tf\t$colunas_x_bobyqa\n")
     end
 
     open(nome, "a") do file
@@ -697,23 +689,23 @@ function BFGS_BOBYQA_two_dim_problem(;
         push!(valores_bobyqa, Float64(valor))
         open(arquivo_pontos, "a") do file
             iter = length(pontos_bobyqa) - 1
-            write(file, "$iter\t$valor\t$(x_atual[1])\t$(x_atual[2])\n")
+            write(file, "$iter\t$valor\t$(join(x_atual, "\t"))\n")
         end
         return valor
     end
 
-    opt = Opt(:LN_BOBYQA, n)
-    opt.lower_bounds = limites_inferiores
-    opt.upper_bounds = limites_superiores
-    opt.initial_step = fill(Float64(rhobeg), n)
-    opt.xtol_abs = fill(Float64(rhoend), n)
+    opt = Opt(:LN_BOBYQA, bobyqa_dim)
+    opt.lower_bounds = limites_inferiores_bobyqa
+    opt.upper_bounds = limites_superiores_bobyqa
+    opt.initial_step = fill(Float64(rhobeg), bobyqa_dim)
+    opt.xtol_abs = fill(Float64(rhoend), bobyqa_dim)
     opt.maxeval = maxeval
-    opt.population = npt
+    opt.population = npt_bobyqa
     opt.min_objective = objetivo_bobyqa
 
     n_calfun_inicio_bobyqa = n_calfun
     tempo_inicio_bobyqa = time()
-    f_bobyqa, x_bobyqa, status_bobyqa = NLopt.optimize(opt, x_final)
+    f_bobyqa, x_bobyqa, status_bobyqa = NLopt.optimize(opt, x_inicial_bobyqa)
     tempo_bobyqa = time() - tempo_inicio_bobyqa
     avaliacoes_bobyqa = n_calfun - n_calfun_inicio_bobyqa
     avaliacoes_nlopt = opt.numevals
@@ -732,6 +724,7 @@ function BFGS_BOBYQA_two_dim_problem(;
         resultado_bfgs = resultado_bfgs,
         x_bfgs = x_final,
         f_bfgs = f_final,
+        x_inicial_bobyqa = x_inicial_bobyqa,
         x_final = x_bobyqa,
         f_final = f_bobyqa,
         pontos_aceitos_bfgs = pontos_aceitos,

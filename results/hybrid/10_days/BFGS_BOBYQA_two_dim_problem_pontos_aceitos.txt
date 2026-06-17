@@ -1,0 +1,10 @@
+Pontos aceitos no BFGS_BOBYQA_two_dim_problem
+Metodo = BFGS seguido de BOBYQA com caixa
+tmax = 10.0
+x0 = [0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08, 0.08]
+dim_bfgs = 10 | dim_bobyqa = 101
+lb = 0.0 | ub = 0.5
+iterations = 10 | penalty_weight = 1.0e6 | rhobeg = 0.05 | rhoend = 0.001 | maxeval = 500
+
+iter	f	gnorm	x1	x2	x3	x4	x5	x6	x7	x8	x9	x10
+0	9.254935023986771	342.98323296193917	0.08	0.08	0.08	0.08	0.08	0.08	0.08	0.08	0.08	0.08

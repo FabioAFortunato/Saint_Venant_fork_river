@@ -122,3 +122,36 @@ function L_sv(x::AbstractVector{T}, lambda::AbstractVector{Float64}, rho::Float6
     return L_total
 end
 
+
+
+function RMSD_calculator(x::AbstractVector{T}; tmax = 5.0) where T<:Real
+
+    # Detecta se é avaliação com derivada (ForwardDiff)
+    is_dual = T <: ForwardDiff.Dual
+
+    # PRINT LOGO NO COMEÇO
+    if is_dual
+        println(">>> Avaliação com DERIVADA (ForwardDiff)")
+    else
+        println(">>> Avaliação NORMAL (sem derivada)")
+    end
+
+    # 1. Ajuste de dimensão
+    n_man = length(x)
+    
+    # 2. Chamada da simulação
+    local z_erro = sv_fork(x[1:n_man], tmax)
+        
+    # Proteção contra NaN
+    if any(isnan, z_erro)
+        return T(1e27)
+    end
+
+    # Cálculo do erro quadrático e do RMSD correspondente
+    erro_quadratico_total = sum(abs2, z_erro)
+    RMSD = sqrt(erro_quadratico_total / length(z_erro))
+    val_RMSD = ForwardDiff.value(RMSD)
+
+    
+    return val_RMSD
+end

@@ -4,6 +4,8 @@ include("../src/obj_func.jl")
 include("../src/BFGS_BOBYQA.jl")
 include("../src/BOBYQA_application.jl")
 include("../src/MADS_application.jl")
+include("../src/assimilacao.jl")
+
 
 function teste_todos(; t = 5.0, x = [0.1; 0.06])
 
