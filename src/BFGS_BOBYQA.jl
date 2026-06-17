@@ -3,6 +3,7 @@ using NLopt
 using ForwardDiff
 using LinearAlgebra
 using LineSearches
+using NOMAD
 
 include("obj_func.jl")
 include("aux_func.jl")
@@ -22,6 +23,290 @@ function hybrid_results_dir_for_tmax(tmax)
     return joinpath(HYBRID_RESULTS_DIR, pasta)
 end
 
+
+function run_problems(; 
+    X0 = fill(0.09, 2),
+    tins = 5.0,
+    λ = 1.0,
+    penalty_weight = 1.0e6,
+    f_calls_limit = 50,
+    g_calls_limit = 20,
+    iterations = 10,
+    rhobeg = 0.05,
+    rhoend = 0.001,
+    rmsd_tol = 0.09,
+    fun::Function = sv_fork_assimilation,
+    method = "all"
+    )
+
+    X_prev = copy(X0)
+    estado_prev = nothing
+    tbeg = 0.0
+    tend = tins isa Number ? Float64(tins) : Float64(last(tins))
+    resultados = Dict{Symbol, Any}()
+
+    dim = length(X_prev)
+
+    println("\n==============================")
+    println("Assimilação de tbeg = ", tbeg, " até tend = ", tend)
+    println("==============================")
+
+    resultado_inicial = fun(X_prev, tbeg, tend, estado_prev)
+    RMSD = norm(resultado_inicial.erro / sqrt(size(resultado_inicial.erro, 1)))
+
+    println("RMSD inicial = ", RMSD)
+
+    if RMSD > 100.0
+        println("Chute inicial ficou 0.08")
+        return resultados
+    end
+
+    lower_bfgs = zeros(dim)
+    upper_bfgs = fill(0.5, dim)
+
+    X_ref = copy(X_prev)
+
+    function f_bfgs(ng)
+        resultado = fun(ng, tbeg, tend, estado_prev)
+        erro = resultado.erro
+
+        if !(eltype(ng) <: ForwardDiff.Dual)
+            RMSD_atual = norm(erro / sqrt(size(erro, 1)))
+            print("RMSD = $RMSD_atual \n")
+        end
+
+        return dot(erro, erro)
+    end
+
+    f_penalizada_bfgs(x_vars) = f_bfgs(x_vars) + penalidade_caixa_externa(
+            x_vars,
+            lower_bfgs,
+            upper_bfgs;
+            rho = penalty_weight,
+        )
+
+    metodos = lowercase(String(method)) == "all" ?
+        [:bfgs, :spg, :bobyqa, :mads] :
+        [Symbol(lowercase(String(method)))]
+
+    cfg_bfgs = ForwardDiff.GradientConfig(
+            f_penalizada_bfgs,
+            X_ref,
+            ForwardDiff.Chunk{dim}()
+        )
+
+    function g_obj!(G, x_k)
+        ForwardDiff.gradient!(G, f_penalizada_bfgs, x_k, cfg_bfgs)
+        return G
+    end
+
+    function arquivo_metodo(metodo)
+        return arquivo_em_results("$(uppercase(String(metodo)))_$(label_tmax(tend))_$(dim).txt")
+    end
+
+    function inicializa_arquivo(metodo)
+        arquivo = arquivo_metodo(metodo)
+        colunas_x = join(("x$i" for i in 1:dim), "\t")
+        open(arquivo, "w") do file
+            write(file, "Metodo = $(uppercase(String(metodo)))\n")
+            write(file, "tbeg = $tbeg | tend = $tend | dim = $dim\n")
+            write(file, "x0 = $(collect(X_ref))\n")
+            write(file, "lower = $(collect(lower_bfgs))\n")
+            write(file, "upper = $(collect(upper_bfgs))\n")
+            write(file, "rmsd_tol = $rmsd_tol\n")
+            write(file, "\niter\tf\t$colunas_x\n")
+        end
+        return arquivo
+    end
+
+    function registra_avaliacao!(arquivo, iter, f, x)
+        open(arquivo, "a") do file
+            write(file, "$iter\t$f\t$(join(float.(x), "\t"))\n")
+        end
+    end
+
+    function salva_resumo!(arquivo; f_final, RMSD, x_final, status, avaliacoes, tempo_s, extra = "")
+        open(arquivo, "a") do file
+            write(file, "\nResumo final\n")
+            write(file, "status = $status\n")
+            write(file, "f_final = $f_final\n")
+            write(file, "RMSD = $RMSD\n")
+            write(file, "avaliacoes = $avaliacoes\n")
+            write(file, "tempo_s = $(round(tempo_s, digits=6))\n")
+            write(file, "x_final = $(collect(x_final))\n")
+            if !isempty(extra)
+                write(file, extra)
+            end
+        end
+    end
+
+    function monta_resultado(metodo, resultado, x_final, f_final, arquivo; status = "", avaliacoes = missing, tempo_s = missing)
+        estado_final = fun(x_final, tbeg, tend, estado_prev)
+        RMSD_final = norm(estado_final.erro / sqrt(size(estado_final.erro, 1)))
+        println("fval $(uppercase(String(metodo))) = ", f_final)
+        println("RMSD após $(uppercase(String(metodo))) = ", RMSD_final)
+        println("Avaliações $(uppercase(String(metodo))) = ", avaliacoes)
+        println("Tempo $(uppercase(String(metodo))) = ", round(tempo_s, digits=6), " s")
+        return (;
+            metodo,
+            tbeg,
+            tend,
+            dim,
+            fval = f_final,
+            RMSD = RMSD_final,
+            X = copy(x_final),
+            estado = estado_final,
+            result = resultado,
+            status,
+            avaliacoes,
+            tempo_s,
+            arquivo,
+        )
+    end
+
+    for metodo in metodos
+        arquivo = inicializa_arquivo(metodo)
+
+        if metodo == :bfgs
+            println("Rodando BFGS com dimensão = ", dim)
+            iter_bfgs = Ref(0)
+
+            function callback_bfgs(estado)
+                registra_avaliacao!(arquivo, iter_bfgs[], estado.f_x, estado.x)
+                iter_bfgs[] += 1
+                return false
+            end
+
+            inicio_metodo = time()
+            resultado_bfgs = Optim.optimize(
+                    f_penalizada_bfgs,
+                    g_obj!,
+                    X_ref,
+                    BFGS(),
+                    Optim.Options(
+                        iterations = iterations,
+                        f_calls_limit = f_calls_limit,
+                        g_calls_limit = g_calls_limit,
+                        callback = callback_bfgs,
+                    ),
+                )
+            tempo_bfgs = time() - inicio_metodo
+
+            X_bfgs = clamp.(Optim.minimizer(resultado_bfgs), lower_bfgs, upper_bfgs)
+            fval_bfgs = Optim.minimum(resultado_bfgs)
+            avaliacoes_bfgs = Optim.f_calls(resultado_bfgs)
+            resultado = monta_resultado(:bfgs, resultado_bfgs, X_bfgs, fval_bfgs, arquivo; status = Optim.converged(resultado_bfgs), avaliacoes = avaliacoes_bfgs, tempo_s = tempo_bfgs)
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = Optim.converged(resultado_bfgs), avaliacoes = avaliacoes_bfgs, tempo_s = tempo_bfgs, extra = "iteracoes = $(Optim.iterations(resultado_bfgs))\ngradientes = $(Optim.g_calls(resultado_bfgs))\n")
+            resultados[:bfgs] = resultado
+
+        elseif metodo == :spg
+            println("Rodando SPGBox com dimensão = ", dim)
+            spgbox = getproperty(Base.require(Base.PkgId(Base.UUID("bf97046b-3e66-4aa0-9aed-26efb7fac769"), "SPGBox")), :spgbox)
+            iter_spg = Ref(0)
+
+            function callback_spg(resultado_spg)
+                registra_avaliacao!(arquivo, iter_spg[], resultado_spg.f, resultado_spg.x)
+                iter_spg[] += 1
+                return false
+            end
+
+            inicio_metodo = time()
+            resultado_spg = Base.invokelatest(
+                spgbox,
+                f_penalizada_bfgs,
+                g_obj!,
+                X_ref;
+                lower = lower_bfgs,
+                upper = upper_bfgs,
+                nitmax = iterations,
+                nfevalmax = f_calls_limit,
+                callback = callback_spg,
+            )
+            tempo_spg = time() - inicio_metodo
+
+            X_spg = copy(resultado_spg.x)
+            fval_spg = resultado_spg.f
+            avaliacoes_spg = resultado_spg.nfeval
+            resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)
+            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ngnorm = $(resultado_spg.gnorm)\n")
+            resultados[:spg] = resultado
+
+        elseif metodo == :bobyqa
+            println("Rodando BOBYQA com dimensão = ", dim)
+            iter_bobyqa = Ref(0)
+
+            function objetivo_bobyqa(x, grad)
+                valor = Float64(f_penalizada_bfgs(x))
+                registra_avaliacao!(arquivo, iter_bobyqa[], valor, x)
+                iter_bobyqa[] += 1
+                return valor
+            end
+
+            opt = Opt(:LN_BOBYQA, dim)
+            lower_bounds!(opt, lower_bfgs)
+            upper_bounds!(opt, upper_bfgs)
+            maxeval!(opt, f_calls_limit)
+            min_objective!(opt, objetivo_bobyqa)
+
+            inicio_metodo = time()
+            fval_bobyqa, X_bobyqa, status_bobyqa = NLopt.optimize(opt, X_ref)
+            tempo_bobyqa = time() - inicio_metodo
+            avaliacoes_bobyqa = iter_bobyqa[]
+            resultado = monta_resultado(:bobyqa, status_bobyqa, X_bobyqa, fval_bobyqa, arquivo; status = status_bobyqa, avaliacoes = avaliacoes_bobyqa, tempo_s = tempo_bobyqa)
+            salva_resumo!(arquivo; f_final = fval_bobyqa, RMSD = resultado.RMSD, x_final = X_bobyqa, status = status_bobyqa, avaliacoes = avaliacoes_bobyqa, tempo_s = tempo_bobyqa)
+            resultados[:bobyqa] = resultado
+
+        elseif metodo == :mads
+            println("Rodando MADS/NOMAD com dimensão = ", dim)
+            pontos_mads = Vector{Vector{Float64}}()
+            valores_mads = Float64[]
+
+            function objetivo_mads(x)
+                valor = Float64(f_penalizada_bfgs(x))
+                x_atual = copy(float.(x))
+                push!(pontos_mads, x_atual)
+                push!(valores_mads, valor)
+                registra_avaliacao!(arquivo, length(pontos_mads) - 1, valor, x_atual)
+                return (true, true, [valor])
+            end
+
+            opcoes = NOMAD.NomadOptions(
+                display_degree = 0,
+                max_bb_eval = f_calls_limit,
+            )
+
+            problema = NOMAD.NomadProblem(
+                dim,
+                1,
+                ["OBJ"],
+                objetivo_mads,
+                input_types = fill("R", dim),
+                lower_bound = lower_bfgs,
+                upper_bound = upper_bfgs,
+                min_mesh_size = fill(Float64(rhoend), dim),
+                initial_mesh_size = fill(Float64(rhobeg), dim),
+                options = opcoes,
+            )
+
+            inicio_metodo = time()
+            resultado_mads = NOMAD.solve(problema, X_ref)
+            tempo_mads = time() - inicio_metodo
+            melhor_indice = argmin(valores_mads)
+            X_mads = get(resultado_mads, :x_sol, pontos_mads[melhor_indice])
+            fval_mads = Float64(f_penalizada_bfgs(X_mads))
+            avaliacoes_mads = length(pontos_mads)
+            resultado = monta_resultado(:mads, resultado_mads, X_mads, fval_mads, arquivo; status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads)
+            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "factivel = $(resultado_mads.feasible)\n")
+            resultados[:mads] = resultado
+
+        else
+            error("Metodo desconhecido: $metodo. Use bfgs, spg, bobyqa, mads ou all.")
+        end
+    end
+
+    return resultados
+
+end
 
 
 function full_dim_problem(;

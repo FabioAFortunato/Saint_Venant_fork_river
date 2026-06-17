@@ -96,7 +96,7 @@ function run_assimilation(;
         end
 
         println("Rodando BFGS com dimensão = ", dim)
-
+        
         resultado_bfgs = Optim.optimize(
                 f_penalizada_bfgs,
                 g_obj!,
