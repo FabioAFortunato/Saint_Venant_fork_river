@@ -1,7 +1,6 @@
 using LinearAlgebra
 using Optim
 using ForwardDiff
-using NOMAD
 
 ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
 using Plots
@@ -34,65 +33,6 @@ function manning_reta_na_malha(x::AbstractVector; n = 101)
     return collect(range(x[1], x[end], length = n))
 end
 
-function refinar_assimilacao_mads(
-    f_obj::Function,
-    x0::AbstractVector,
-    lower::AbstractVector,
-    upper::AbstractVector;
-    rhobeg = 0.02,
-    rhoend = 1.0e-4,
-    maxeval = 100,
-    display_degree = 0,
-)
-    n = length(x0)
-    x_inicial = clamp.(float.(x0), lower, upper)
-    pontos_avaliados = Vector{Vector{Float64}}()
-    valores_avaliados = Float64[]
-
-    function objetivo_mads(x)
-        x_atual = clamp.(float.(x), lower, upper)
-        valor = Float64(f_obj(x_atual))
-
-        push!(pontos_avaliados, copy(x_atual))
-        push!(valores_avaliados, valor)
-
-        return (true, true, [valor])
-    end
-
-    opcoes = NOMAD.NomadOptions(
-        display_degree = display_degree,
-        max_bb_eval = maxeval,
-    )
-
-    problema = NOMAD.NomadProblem(
-        n,
-        1,
-        ["OBJ"],
-        objetivo_mads,
-        input_types = fill("R", n),
-        lower_bound = Float64.(lower),
-        upper_bound = Float64.(upper),
-        min_mesh_size = fill(Float64(rhoend), n),
-        initial_mesh_size = fill(Float64(rhobeg), n),
-        options = opcoes,
-    )
-
-    resultado = NOMAD.solve(problema, x_inicial)
-    x_final = clamp.(float.(resultado.x_sol), lower, upper)
-    f_final = Float64(f_obj(x_final))
-
-    return (;
-        x_final,
-        f_final,
-        resultado,
-        pontos_avaliados,
-        valores_avaliados,
-        avaliacoes_mads = length(pontos_avaliados),
-        status = resultado.status,
-        factivel = resultado.feasible,
-    )
-end
-
 function run_assimilation(; 
     X0 = fill(0.08, 2),
     tins = 4.0:1.0:4.0,
@@ -101,10 +41,6 @@ function run_assimilation(;
     bfgs_f_calls_limit = 50,
     bfgs_g_calls_limit = 20,
     bfgs_iterations = 10,
-    mads_rhobeg = 0.02,
-    mads_rhoend = 1.0e-4,
-    mads_maxeval = 100,
-    mads_display_degree = 0,
     rmsd_tol = 0.09,
     fun::Function = sv_fork_assimilation,
     )
@@ -183,76 +119,41 @@ function run_assimilation(;
         println("fval BFGS = ", fval_bfgs)
         println("RMSD após BFGS = ", RMSD_bfgs)
 
-        println("Refinando solução do BFGS com MADS/NOMAD")
-        resultado_mads = refinar_assimilacao_mads(
-            f_bfgs,
-            X_bfgs,
-            lower_bfgs,
-            upper_bfgs;
-            rhobeg = mads_rhobeg,
-            rhoend = mads_rhoend,
-            maxeval = mads_maxeval,
-            display_degree = mads_display_degree,
-        )
-
-        X_mads = resultado_mads.x_final
-        fval_mads = resultado_mads.f_final
-        estado_mads = fun(X_mads, tbeg, tend, estado_prev)
-        RMSD_mads = norm(estado_mads.erro / sqrt(size(estado_mads.erro, 1)))
-
-        println("fval MADS = ", fval_mads)
-        println("RMSD após MADS = ", RMSD_mads)
-        println("status MADS = ", resultado_mads.status, " | factível = ", resultado_mads.factivel)
-
-        if RMSD_mads < 10.0
+        if RMSD_bfgs < 10.0
             tbeg_aceito = tbeg
 
             push!(history, (
                     tbeg = tbeg,
                     tend = tend,
-                    stage = :MADS,
+                    stage = :BFGS,
                     dim = dim,
-                    fval = fval_mads,
-                    RMSD = RMSD_mads,
-                    X = copy(X_mads),
-                    estado = estado_mads,
-                    result = resultado_mads.resultado,
-                    bfgs_result = resultado_bfgs,
-                    fval_bfgs = fval_bfgs,
-                    RMSD_bfgs = RMSD_bfgs,
-                    X_bfgs = copy(X_bfgs),
-                    mads_status = resultado_mads.status,
-                    mads_factivel = resultado_mads.factivel,
-                    avaliacoes_mads = resultado_mads.avaliacoes_mads,
+                    fval = fval_bfgs,
+                    RMSD = RMSD_bfgs,
+                    X = copy(X_bfgs),
+                    estado = estado_bfgs,
+                    result = resultado_bfgs,
                 ))
 
-            X_prev = copy(X_mads)
-            estado_prev = estado_mads
+            X_prev = copy(X_bfgs)
+            estado_prev = estado_bfgs
             tbeg = tend
-            println("RMSD aceitável com MADS para o intervalo [", tbeg_aceito, ", ", tend, "]")
+            println("RMSD aceitável com BFGS para o intervalo [", tbeg_aceito, ", ", tend, "]")
             continue
         end
 
         push!(history, (
                 tbeg = tbeg,
                 tend = tend,
-                stage = :MADS,
+                stage = :BFGS,
                 dim = dim,
-                fval = fval_mads,
-                RMSD = RMSD_mads,
-                X = copy(X_mads),
-                estado = estado_mads,
-                result = resultado_mads.resultado,
-                bfgs_result = resultado_bfgs,
-                fval_bfgs = fval_bfgs,
-                RMSD_bfgs = RMSD_bfgs,
-                X_bfgs = copy(X_bfgs),
-                mads_status = resultado_mads.status,
-                mads_factivel = resultado_mads.factivel,
-                avaliacoes_mads = resultado_mads.avaliacoes_mads,
+                fval = fval_bfgs,
+                RMSD = RMSD_bfgs,
+                X = copy(X_bfgs),
+                estado = estado_bfgs,
+                result = resultado_bfgs,
             ))
 
-        println("O MADS não encontrou um ponto adequado para o intervalo [", tbeg, ", ", tend, "]")
+        println("O BFGS não encontrou um ponto adequado para o intervalo [", tbeg, ", ", tend, "]")
         plot_assimilation_profiles(history)
         return history
     end
@@ -447,42 +348,17 @@ function sv_fork_new(
     # ------------------------------------------------------------
     while t <= tmax
 
-        # --------------------------------------------------------
-        # Stability diagnostics before update
-        # --------------------------------------------------------
-        # for i = 1:nx
-        #     if h[i] <= hmin_safe || a[i] <= amin_safe
-        #         return failed_return(t)
-        #     end
-
-        #     c = sqrt(T(grav)*h[i])
-        #     cfl_i = (abs(v[i]) + c)*T(dt/dx)
-        #     fr_i = abs(v[i])/c
-
-        #     h_min_global = min(h_min_global, h[i])
-        #     v_max_global = max(v_max_global, abs(v[i]))
-        #     cfl_max_global = max(cfl_max_global, cfl_i)
-        #     fr_max_global = max(fr_max_global, fr_i)
-
-        #     if !isfinite(cfl_i) || !isfinite(fr_i)
-        #         return failed_return(t)
-        #     end
-        # end
-
-        # --------------------------------------------------------
-        # Consistent smoothing
-        # Smooth only a and av, then recompute h, z, v.
 
         av_old = copy(av)
-        z_old = copy(z)
+        h_old = copy(h)
 
         for i = 2:nx-1
             av[i] = alfa*av_old[i] + ualfa*(av_old[i-1] + av_old[i+1])/2
-            z[i]  = alfa*z_old[i]  + ualfa*(z_old[i-1]  + z_old[i+1])/2
+            h[i]  = alfa*h_old[i]  + ualfa*(h_old[i-1]  + h_old[i+1])/2
         end
 
         for i = 1:nx
-            h[i] = z[i] - zb[i]
+            z[i] = h[i] + zb[i]
             a[i] = ancho[i]*h[i]
             v[i] = av[i]/a[i]
         end

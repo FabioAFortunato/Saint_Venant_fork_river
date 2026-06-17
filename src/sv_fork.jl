@@ -329,25 +329,16 @@ function sv_fork_assimilation(
       while t <= tmax
 
   
-        #    Smoothing
-          for i = 2:nx-1 
-              a[i] = alfa*a[i] + ualfa*(a[i-1]+a[i+1])/2.0
-          end
-      
-          for i = 2:nx-1
-              v[i] = alfa*v[i] + ualfa*(v[i-1]+v[i+1])/2.0
-          end
-  
-          for i = 2:nx-1
-              z[i] = alfa*z[i] + ualfa*(z[i-1]+z[i+1])/2.0
-          end
-  
+        #    Smoothing 
           for i = 2:nx-1
               h[i] = alfa*h[i] + ualfa*(h[i-1]+h[i+1])/2.0
-          end
-  
-          for i = 2:nx-1
               av[i] = alfa*av[i] + ualfa*(av[i-1]+av[i+1])/2.0
+          end
+
+          for i = 1:nx
+            z[i] = h[i]+zb[i]
+            a[i] = ancho[i]*h[i]
+            v[i] = av[i]/a[i]
           end
   
         # End of Smoothing
