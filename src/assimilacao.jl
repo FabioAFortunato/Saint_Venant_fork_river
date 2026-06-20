@@ -34,8 +34,8 @@ function manning_reta_na_malha(x::AbstractVector; n = 101)
 end
 
 function run_assimilation(; 
-    X0 = fill(0.08, 2),
-    tins = 4.0:1.0:4.0,
+    X0 = fill(0.09, 2),
+    tins = 31.0:1.0:31.0,
     λ = 1.0,
     penalty_weight = 1.0e6,
     bfgs_f_calls_limit = 50,
@@ -59,7 +59,9 @@ function run_assimilation(;
         println("Assimilação de tbeg = ", tbeg, " até tend = ", tend)
         println("==============================")
 
+        tempo = time()
         resultado_inicial = fun(X_prev, tbeg, tend, estado_prev)
+        tempo_final_fun = time() - tempo
         RMSD = norm(resultado_inicial.erro / sqrt(size(resultado_inicial.erro, 1)))
 
         println("RMSD inicial = ", RMSD)
@@ -94,6 +96,13 @@ function run_assimilation(;
             ForwardDiff.gradient!(G, f_penalizada_bfgs, x_k, cfg_bfgs)
             return G
         end
+
+        tempo = time()
+        result = zeros(2)
+        g_obj!(result, X0)
+
+        tempo_final = time() - tempo
+        return result, tempo_final, tempo_final_fun
 
         println("Rodando BFGS com dimensão = ", dim)
         

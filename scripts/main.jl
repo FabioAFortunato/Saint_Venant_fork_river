@@ -1,3 +1,5 @@
+using DataFrames
+using Printf
 n_man = 101
 
 include("../src/obj_func.jl")
@@ -5,6 +7,7 @@ include("../src/BFGS_BOBYQA.jl")
 include("../src/BOBYQA_application.jl")
 include("../src/MADS_application.jl")
 include("../src/assimilacao.jl")
+include("../src/solve_sv_beta.jl")
 
 struct struct_Result
     method::String
@@ -16,22 +19,113 @@ struct struct_Result
     x_final::Vector
 end
 
-function teste_todos_novo()
-    todos_resultados=[]
-    for t in [5.0, 15.0, 31.0]
-        for i = 1:3
-            res_todos = run_problems(X0 = fill(0.09, i), tins = t)
+function teste_derivada_tempo()
+    df = DataFrame(dim = Int[], tempo_derivada = Float16[], tempo_fun= Float16[], razao_derivada_fun = Int[])
+    for i in 1:2:10
+        X0, t_d, t_f = run_assimilation(X0 = fill(0.09, i))
+        raz = round(Int, (t_d/t_f))
+        push!(df, (i, t_d, t_f, raz))
+    end
+    return df
+
+end
+
+function teste_todos_novo(;
+    tins = [5.0, 15.0, 31.0],
+    dims = 3,
+    filename = "results_new_SV.tex",
+    method = "all",
+    f_calls_limit = 50,
+    g_calls_limit = 20,
+    iterations = 10,
+)
+    todos_resultados = struct_Result[]
+    for t in tins
+        for i = 1:dims
+            res_todos = run_problems(
+                X0 = fill(0.09, i),
+                tins = t,
+                method = method,
+                f_calls_limit = f_calls_limit,
+                g_calls_limit = g_calls_limit,
+                iterations = iterations,
+            )
             for res in res_todos
-                append!(todos_resultados, struct_Result(res[2].metodo, 
-                        res[2].dim, 
-                        res[2].tend,
-                        res[2].RMSD,
-                        res[2].evaluation,
-                        res[2].time,
-                        res[2].x_final))
+                push!(todos_resultados, 
+                        struct_Result(
+                            String(res[2].metodo), 
+                            res[2].dim, 
+                            res[2].tend,
+                            res[2].RMSD,
+                            res[2].avaliacoes,
+                            res[2].tempo_s,
+                            res[2].X))
             end
         end
     end
+
+    df = DataFrame(
+        Method = [r.method for r in todos_resultados],
+        tmax = [r.tmax for r in todos_resultados],
+        n_grid = [r.dim for r in todos_resultados],
+        RMSD = [r.RMSD for r in todos_resultados],
+        Time = [r.time for r in todos_resultados],
+        Evaluations = [r.evaluation for r in todos_resultados],
+    )
+
+
+    open(filename, "w") do io
+
+        println(io, raw"\begin{table}[htbp]")
+        println(io, raw"\centering")
+        println(io, raw"\caption{Results obtained by the solvers for the smoothed Saint-Venant model.}")
+        println(io, raw"\label{tab:methods_new_SV}")
+        println(io, raw"\begin{tabular}{c|c|cccc}")
+        println(io, raw"\hline")
+        println(io, raw"Method & $t_{\max}$ & $n_{grid}$ & RMSD & Time (s) & Evaluations \\ \hline")
+
+
+        methods = unique(df.Method)
+
+        for method in methods
+            df_method = df[df.Method .== method, :]
+            tmax_values = unique(df_method.tmax)
+
+            first_method_row = true
+
+            for (k, tmax) in enumerate(tmax_values)
+                df_t = df_method[df_method.tmax .== tmax, :]
+                sort!(df_t, :n_grid)
+                n_linhas_tmax = nrow(df_t)
+
+                for (j, row) in enumerate(eachrow(df_t))
+                    method_entry = first_method_row && j == 1 ? method : ""
+                    tmax_entry = j == 1 ? "\\multirow{$n_linhas_tmax}{*}{$(Int(tmax))}" : ""
+
+                    rmsd_str = @sprintf("%.4f", row.RMSD)
+                    time_str = @sprintf("%.2f", row.Time)
+
+                    println(io,
+                        "$(method_entry) & $(tmax_entry) & $(row.n_grid) & " *
+                        "$(rmsd_str) & $(time_str) & $(row.Evaluations) \\\\"
+                    )
+                end
+
+                first_method_row = false
+
+                if k < length(tmax_values)
+                    println(io, raw"\cline{2-6}")
+                end
+            end
+
+            println(io, raw"\hline")
+        end
+
+        println(io, raw"\end{tabular}")
+        println(io, raw"\end{table}")
+    end
+
+
 end
 
 function teste_todos(; t = 5.0, x = [0.1; 0.06])
@@ -45,9 +139,6 @@ function teste_todos(; t = 5.0, x = [0.1; 0.06])
     mads_full_dim_problem(tmax = t, x0 = collect(range(x[1], x[2], length = 101)))
     mads_two_dim_problem(tmax = t, x0 = x)
 end
-
-
-
 
 
 
