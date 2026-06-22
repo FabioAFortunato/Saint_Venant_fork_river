@@ -1,5 +1,6 @@
 using DataFrames
 using Printf
+using GLM
 n_man = 101
 
 include("../src/obj_func.jl")
@@ -20,14 +21,56 @@ struct struct_Result
 end
 
 function teste_derivada_tempo()
-    df = DataFrame(dim = Int[], tempo_derivada = Float16[], tempo_fun= Float16[], razao_derivada_fun = Int[])
-    for i in 1:2:10
-        X0, t_d, t_f = run_assimilation(X0 = fill(0.09, i))
-        raz = round(Int, (t_d/t_f))
-        push!(df, (i, t_d, t_f, raz))
-    end
-    return df
 
+    df = DataFrame(
+        dim = Int[],
+        tempo_derivada = Float64[],
+        tempo_fun = Float64[],
+        razao_derivada_fun = Float64[]
+    )
+
+    for i in 1:101
+        X0, t_d, t_f = run_assimilation(
+            X0 = fill(0.09, i),
+            tins = 31.0
+        )
+
+        raz = t_d / t_f
+
+        push!(df, (
+            dim = i,
+            tempo_derivada = t_d,
+            tempo_fun = t_f,
+            razao_derivada_fun = raz
+        ))
+    end
+
+    modelo = lm(@formula(tempo_derivada ~ dim), df)
+
+    df_plot = sort(df, :dim)
+
+    x_plot = df_plot.dim
+    y_plot = df_plot.tempo_derivada
+
+    y_line = predict(modelo, DataFrame(dim = x_plot))
+
+    p = plot(
+        x_plot,
+        y_line,
+        label = "Linear fit",
+        xlabel = "Dimension",
+        ylabel = "Time (s)"
+    )
+
+    scatter!(
+        p,
+        x_plot,
+        y_plot,
+        label = "Observed times"
+    )
+    savefig("results/derivada.png")
+
+    return df, p
 end
 
 function teste_todos_novo(;
