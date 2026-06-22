@@ -46,6 +46,7 @@ function teste_derivada_tempo()
     end
 
     modelo = lm(@formula(tempo_derivada ~ dim), df)
+    b, a = coef(modelo)
 
     df_plot = sort(df, :dim)
 
@@ -57,7 +58,7 @@ function teste_derivada_tempo()
     p = plot(
         x_plot,
         y_line,
-        label = "Linear fit",
+        label = "tempo_derivada ≈ $a + $b * dim",
         xlabel = "Dimension",
         ylabel = "Time (s)"
     )
