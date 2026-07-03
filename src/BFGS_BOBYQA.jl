@@ -2,7 +2,6 @@ using Optim
 using NLopt
 using ForwardDiff
 using LinearAlgebra
-using LineSearches
 using NOMAD
 
 include("obj_func.jl")
@@ -75,7 +74,14 @@ function run_problems(;
             print("RMSD = $RMSD_atual \n")
         end
 
-        return dot(erro, erro)
+        sse = dot(erro, erro)
+        if isnan(sse)
+            return 1.0e26
+        # elseif sse > 100.0
+        #     return 100.0 + penalty_weight * (sse - 100.0)^2
+        end
+
+        return sse
     end
 
     f_penalizada_bfgs(x_vars) = f_bfgs(x_vars) + penalidade_caixa_externa(
@@ -85,9 +91,14 @@ function run_problems(;
             rho = penalty_weight,
         )
 
+    function normaliza_metodo(metodo)
+        metodo_sym = Symbol(lowercase(String(metodo)))
+        return metodo_sym in (:bfgs, :lbfgs, :lbfgsb) ? :bfgs : metodo_sym
+    end
+
     metodos = lowercase(String(method)) == "all" ?
         [:bfgs, :spg, :bobyqa, :mads] :
-        [Symbol(lowercase(String(method)))]
+        [normaliza_metodo(method)]
 
     cfg_bfgs = ForwardDiff.GradientConfig(
             f_penalizada_bfgs,
@@ -97,6 +108,17 @@ function run_problems(;
 
     function g_obj!(G, x_k)
         ForwardDiff.gradient!(G, f_penalizada_bfgs, x_k, cfg_bfgs)
+        return G
+    end
+
+    cfg_bfgs_raw = ForwardDiff.GradientConfig(
+            f_bfgs,
+            X_ref,
+            ForwardDiff.Chunk{dim}()
+        )
+
+    function g_bfgs_raw!(G, x_k)
+        ForwardDiff.gradient!(G, f_bfgs, x_k, cfg_bfgs_raw)
         return G
     end
 
@@ -169,34 +191,43 @@ function run_problems(;
 
         if metodo == :bfgs
             println("Rodando BFGS com dimensão = ", dim)
-            iter_bfgs = Ref(0)
+            avaliacoes_bfgs = Ref(0)
 
-            function callback_bfgs(estado)
-                registra_avaliacao!(arquivo, iter_bfgs[], estado.f_x, estado.x)
-                iter_bfgs[] += 1
-                return false
+            function f_bfgs_optim(x)
+                f = f_penalizada_bfgs(x)
+                registra_avaliacao!(arquivo, avaliacoes_bfgs[], f, x)
+                avaliacoes_bfgs[] += 1
+                return f
             end
 
             inicio_metodo = time()
             resultado_bfgs = Optim.optimize(
-                    f_penalizada_bfgs,
-                    g_obj!,
-                    X_ref,
-                    BFGS(),
-                    Optim.Options(
-                        iterations = iterations,
-                        f_calls_limit = f_calls_limit,
-                        g_calls_limit = g_calls_limit,
-                        callback = callback_bfgs,
-                    ),
-                )
+                f_bfgs_optim,
+                g_obj!,
+                copy(X0),
+                BFGS(linesearch = BoxQuadraticArmijoWolfe(g_obj!, lower_bfgs, upper_bfgs)),
+                Optim.Options(
+                    iterations = iterations,
+                    f_calls_limit = f_calls_limit,
+                    g_calls_limit = g_calls_limit,
+                ),
+            )
             tempo_bfgs = time() - inicio_metodo
-
-            X_bfgs = clamp.(Optim.minimizer(resultado_bfgs), lower_bfgs, upper_bfgs)
+            X_bfgs = Optim.minimizer(resultado_bfgs)
             fval_bfgs = Optim.minimum(resultado_bfgs)
-            avaliacoes_bfgs = Optim.f_calls(resultado_bfgs)
-            resultado = monta_resultado(:bfgs, resultado_bfgs, X_bfgs, fval_bfgs, arquivo; status = Optim.converged(resultado_bfgs), avaliacoes = avaliacoes_bfgs, tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = Optim.converged(resultado_bfgs), avaliacoes = avaliacoes_bfgs, tempo_s = tempo_bfgs, extra = "iteracoes = $(Optim.iterations(resultado_bfgs))\ngradientes = $(Optim.g_calls(resultado_bfgs))\n")
+            G_bfgs = similar(X_bfgs)
+            g_obj!(G_bfgs, X_bfgs)
+            println(norm(G_bfgs))
+            resumo_bfgs = (;
+                f = fval_bfgs,
+                x = copy(X_bfgs),
+                avaliacoes = avaliacoes_bfgs[],
+                maxiter = iterations,
+                maxfun = f_calls_limit,
+            )
+            status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
+            resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
 
         elseif metodo == :spg
@@ -220,11 +251,15 @@ function run_problems(;
                 upper = upper_bfgs,
                 nitmax = iterations,
                 nfevalmax = f_calls_limit,
+                iprint = 2,
                 callback = callback_spg,
             )
             tempo_spg = time() - inicio_metodo
 
             X_spg = copy(resultado_spg.x)
+            G_spg = similar(X_spg)
+            g_bfgs_raw!(G_spg, X_spg)
+            println(norm(G_spg))
             fval_spg = resultado_spg.f
             avaliacoes_spg = resultado_spg.nfeval
             resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)

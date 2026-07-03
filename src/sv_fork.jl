@@ -263,6 +263,299 @@ function sv_fork(ng::AbstractVector{T}, tin) where T<:Real
 
 end
 
+function _pesos_manning(n_man::Integer)
+    pesos = zeros(Float64, nx, n_man)
+
+    if n_man == 1
+        pesos[:, 1] .= 1.0
+    elseif n_man == 2
+        for i = 1:nx
+            theta = (i - 1) / (nx - 1)
+            pesos[i, 1] = 1.0 - theta
+            pesos[i, 2] = theta
+        end
+    elseif n_man == nx
+        for i = 1:nx
+            pesos[i, i] = 1.0
+        end
+    elseif 2 < n_man < nx
+        for i = 1:nx
+            pos_ng = 1.0 + (i - 1) * (n_man - 1) / (nx - 1)
+            j = floor(Int, pos_ng)
+            j = clamp(j, 1, n_man - 1)
+            frac = pos_ng - j
+            pesos[i, j] = 1.0 - frac
+            pesos[i, j + 1] = frac
+        end
+    else
+        error("Wrong dimension. Please choose ng with size between 1 and nx")
+    end
+
+    return pesos
+end
+
+"""
+    sv_fork_derivada(ng, tin)
+
+Retorna a derivada analítica de `sv_fork(ng, tin)` em relação a `ng`.
+Cada linha da matriz corresponde a uma componente de erro retornada por
+`sv_fork`; cada coluna corresponde a uma componente de `ng`.
+"""
+function sv_fork_derivada(ng::AbstractVector{T}, tin) where T<:Real
+    alfa = 0.99
+    ualfa = 1.0 - alfa
+    xmax = 3256.0
+    xmin = -39.0
+    dt = 1.0
+    dx = (xmax - xmin) / (nx - 1)
+    grav = 9.8
+    eps_fric = 1.0e-3
+    tmix_aux = 60.0 * 60.0 * 24.0 * 3.0
+    tmax = 60.0 * 60.0 * 24.0 * tin
+    n_man = length(ng)
+    ng_float = Float64.(ng)
+    pesos_manning = _pesos_manning(n_man)
+
+    zb = zeros(Float64, nx)
+    z = zeros(Float64, nx)
+    h = zeros(Float64, nx)
+    av = zeros(Float64, nx)
+    ancho = zeros(Float64, nx)
+    a = zeros(Float64, nx)
+    v = zeros(Float64, nx)
+
+    da = zeros(Float64, nx, n_man)
+    dz = zeros(Float64, nx, n_man)
+    dh = zeros(Float64, nx, n_man)
+    dav = zeros(Float64, nx, n_man)
+    dv = zeros(Float64, nx, n_man)
+
+    anew = zeros(Float64, nx)
+    zhatx = zeros(Float64, nx)
+    avnew = zeros(Float64, nx)
+    vnew = zeros(Float64, nx)
+    hnew = zeros(Float64, nx)
+
+    danew = zeros(Float64, nx, n_man)
+    dzhatx = zeros(Float64, nx, n_man)
+    davnew = zeros(Float64, nx, n_man)
+    dvnew = zeros(Float64, nx, n_man)
+    dhnew = zeros(Float64, nx, n_man)
+
+    jac_zou = Vector{Vector{Float64}}()
+    jac_zinterior = Vector{Vector{Float64}}()
+    idx_interior = round(Int32, (751.0 / 3256.0) * 101.0)
+
+    for i = 1:nx
+        x = xmin + dx * (i - 1)
+        zb[i] = zbfork(x)
+        z[i] = zfork(x)
+        h[i] = z[i] - zb[i]
+        av[i] = qinlet(tmin)
+        ancho[i] = anchofork(x)
+        a[i] = ancho[i] * h[i]
+        v[i] = av[i] / a[i]
+    end
+
+    t = tmin
+    ya = 0
+    continuar = true
+
+    while t <= tmax
+        for i = 2:nx-1
+            a[i] = alfa * a[i] + ualfa * (a[i - 1] + a[i + 1]) / 2.0
+            for k = 1:n_man
+                da[i, k] = alfa * da[i, k] + ualfa * (da[i - 1, k] + da[i + 1, k]) / 2.0
+            end
+        end
+
+        for i = 2:nx-1
+            v[i] = alfa * v[i] + ualfa * (v[i - 1] + v[i + 1]) / 2.0
+            for k = 1:n_man
+                dv[i, k] = alfa * dv[i, k] + ualfa * (dv[i - 1, k] + dv[i + 1, k]) / 2.0
+            end
+        end
+
+        for i = 2:nx-1
+            z[i] = alfa * z[i] + ualfa * (z[i - 1] + z[i + 1]) / 2.0
+            for k = 1:n_man
+                dz[i, k] = alfa * dz[i, k] + ualfa * (dz[i - 1, k] + dz[i + 1, k]) / 2.0
+            end
+        end
+
+        for i = 2:nx-1
+            h[i] = alfa * h[i] + ualfa * (h[i - 1] + h[i + 1]) / 2.0
+            for k = 1:n_man
+                dh[i, k] = alfa * dh[i, k] + ualfa * (dh[i - 1, k] + dh[i + 1, k]) / 2.0
+            end
+        end
+
+        for i = 2:nx-1
+            av[i] = alfa * av[i] + ualfa * (av[i - 1] + av[i + 1]) / 2.0
+            for k = 1:n_man
+                dav[i, k] = alfa * dav[i, k] + ualfa * (dav[i - 1, k] + dav[i + 1, k]) / 2.0
+            end
+        end
+
+        imprim = tmix_aux + ya * timprim
+        if (t >= imprim) && (t <= tmax)
+            ya += 1
+            push!(jac_zou, collect(view(dz, nx, :)))
+            push!(jac_zinterior, collect(view(dz, idx_interior, :)))
+        end
+
+        t += dt
+
+        fill!(danew, 0.0)
+        fill!(dzhatx, 0.0)
+        fill!(davnew, 0.0)
+        fill!(dvnew, 0.0)
+        fill!(dhnew, 0.0)
+
+        for i = 1:nx
+            if i > 1 && i < nx
+                avx = (av[i + 1] - av[i - 1]) / (2.0 * dx)
+            elseif i == 1
+                avx = (av[i + 1] - av[i]) / dx
+            else
+                avx = (av[i] - av[i - 1]) / dx
+            end
+
+            at = -avx
+            anew[i] = a[i] + dt * at
+
+            if anew[i] < 0.0
+                continuar = false
+                break
+            end
+
+            if i > 1 && i < nx
+                av2x = (av[i + 1] * v[i + 1] - av[i - 1] * v[i - 1]) / (2.0 * dx)
+                zhat_bruto = (z[i + 1] - z[i - 1]) / (2.0 * dx)
+            elseif i == 1
+                av2x = (av[i + 1] * v[i + 1] - av[i] * v[i]) / dx
+                zhat_bruto = (z[i + 1] - z[i]) / dx
+            else
+                av2x = (av[i] * v[i] - av[i - 1] * v[i - 1]) / dx
+                zhat_bruto = (z[i] - z[i - 1]) / dx
+            end
+
+            zhatx[i] = zhat_bruto / (1.0 + zhat_bruto^2)
+            fator_dzhat = (1.0 - zhat_bruto^2) / (1.0 + zhat_bruto^2)^2
+            peri = ancho[i] + 2.0 * h[i]
+            razao_hidraulica = a[i] / peri
+            rh3 = razao_hidraulica^(4.0 / 3.0)
+            eneg = 0.0
+            for k = 1:n_man
+                eneg += pesos_manning[i, k] * ng_float[k]
+            end
+
+            s_av = sqrt(av[i]^2 + eps_fric)
+            denom_fric = rh3 * a[i]
+            num_fric = eneg^2 * av[i] * s_av
+            fric = num_fric / denom_fric
+            avt = -av2x - grav * a[i] * zhatx[i] - fric
+            avnew[i] = av[i] + dt * avt
+
+            if isnan(avt)
+                continuar = false
+                break
+            end
+
+            for k = 1:n_man
+                if i > 1 && i < nx
+                    davx_k = (dav[i + 1, k] - dav[i - 1, k]) / (2.0 * dx)
+                    dav2x_k = (dav[i + 1, k] * v[i + 1] + av[i + 1] * dv[i + 1, k] -
+                                dav[i - 1, k] * v[i - 1] - av[i - 1] * dv[i - 1, k]) / (2.0 * dx)
+                    dzhat_bruto_k = (dz[i + 1, k] - dz[i - 1, k]) / (2.0 * dx)
+                elseif i == 1
+                    davx_k = (dav[i + 1, k] - dav[i, k]) / dx
+                    dav2x_k = (dav[i + 1, k] * v[i + 1] + av[i + 1] * dv[i + 1, k] -
+                                dav[i, k] * v[i] - av[i] * dv[i, k]) / dx
+                    dzhat_bruto_k = (dz[i + 1, k] - dz[i, k]) / dx
+                else
+                    davx_k = (dav[i, k] - dav[i - 1, k]) / dx
+                    dav2x_k = (dav[i, k] * v[i] + av[i] * dv[i, k] -
+                                dav[i - 1, k] * v[i - 1] - av[i - 1] * dv[i - 1, k]) / dx
+                    dzhat_bruto_k = (dz[i, k] - dz[i - 1, k]) / dx
+                end
+
+                danew[i, k] = da[i, k] - dt * davx_k
+                dzhatx[i, k] = fator_dzhat * dzhat_bruto_k
+
+                dperi_k = 2.0 * dh[i, k]
+                drazao_k = (da[i, k] * peri - a[i] * dperi_k) / peri^2
+                drh3_k = (4.0 / 3.0) * razao_hidraulica^(1.0 / 3.0) * drazao_k
+                deneg_k = pesos_manning[i, k]
+                dnum_fric_k = 2.0 * eneg * deneg_k * av[i] * s_av +
+                               eneg^2 * dav[i, k] * (s_av + av[i]^2 / s_av)
+                ddenom_fric_k = drh3_k * a[i] + rh3 * da[i, k]
+                dfric_k = (dnum_fric_k * denom_fric - num_fric * ddenom_fric_k) / denom_fric^2
+                davt_k = -dav2x_k - grav * (da[i, k] * zhatx[i] + a[i] * dzhatx[i, k]) - dfric_k
+                davnew[i, k] = dav[i, k] + dt * davt_k
+            end
+
+            if avnew[i] == 0.0
+                vnew[i] = 0.0
+                for k = 1:n_man
+                    dvnew[i, k] = 0.0
+                end
+            else
+                vnew[i] = avnew[i] / anew[i]
+                for k = 1:n_man
+                    dvnew[i, k] = (davnew[i, k] * anew[i] - avnew[i] * danew[i, k]) / anew[i]^2
+                end
+            end
+
+            hnew[i] = anew[i] / ancho[i]
+            for k = 1:n_man
+                dhnew[i, k] = danew[i, k] / ancho[i]
+            end
+        end
+
+        if !continuar
+            break
+        end
+
+        avnew[1] = qinlet(t)
+        for k = 1:n_man
+            davnew[1, k] = 0.0
+        end
+        vnew[1] = avnew[1] / anew[1]
+        for k = 1:n_man
+            dvnew[1, k] = -avnew[1] * danew[1, k] / anew[1]^2
+        end
+
+        for i = 1:nx
+            a[i] = anew[i]
+            v[i] = vnew[i]
+            h[i] = hnew[i]
+            av[i] = avnew[i]
+            z[i] = zb[i] + h[i]
+            for k = 1:n_man
+                da[i, k] = danew[i, k]
+                dv[i, k] = dvnew[i, k]
+                dh[i, k] = dhnew[i, k]
+                dav[i, k] = davnew[i, k]
+                dz[i, k] = dh[i, k]
+            end
+        end
+    end
+
+    if !continuar
+        return zeros(Float64, 2 * nt, n_man)
+    end
+
+    n_obs = length(jac_zou)
+    jac = zeros(Float64, 2 * n_obs, n_man)
+    for i = 1:n_obs
+        jac[i, :] .= jac_zou[i]
+        jac[n_obs + i, :] .= jac_zinterior[i]
+    end
+    return jac
+end
+
+
 
 function sv_fork_beta(
     ng::AbstractVector{T};

@@ -97,12 +97,12 @@ function run_assimilation(;
             return G
         end
 
-        tempo = time()
+        # tempo = time()
         result = zeros(2)
-        g_obj!(result, X0)
+        # g_obj!(result, X0)
 
-        tempo_final = time() - tempo
-        return result, tempo_final, tempo_final_fun
+        tempo_final = 0.0
+        return result, tempo_final_fun, tempo_final
 
         println("Rodando BFGS com dimensão = ", dim)
         

@@ -182,6 +182,96 @@ function (ls::ArmijoThenWolfe)(d, x, s, α0, x_ls, ϕ0, dϕ0)
 end
 
 
+struct BoxQuadraticArmijoWolfe{G,L,U}
+    g!::G
+    lower::L
+    upper::U
+    c1::Float64
+    c2::Float64
+    ρ::Float64
+    maxiter::Int
+end
+
+function BoxQuadraticArmijoWolfe(g!, lower, upper; c1 = 1e-4, c2 = 0.9, ρ = 0.5, maxiter = 20)
+    return BoxQuadraticArmijoWolfe(g!, lower, upper, c1, c2, ρ, maxiter)
+end
+
+function alpha_inicial_caixa(x, s, lower, upper, α0)
+    α = α0
+    for i in eachindex(x, s, lower, upper)
+        if s[i] > 0
+            α = min(α, (upper[i] - x[i]) / s[i])
+        elseif s[i] < 0
+            α = min(α, (lower[i] - x[i]) / s[i])
+        end
+    end
+    return max(zero(α0), α)
+end
+
+function alpha_interpolacao_quadratica(α, ϕα, ϕ0, dϕ0, ρ)
+    α_backtracking = ρ * α
+    if !(isfinite(ϕα) && isfinite(dϕ0))
+        return α_backtracking
+    end
+
+    denominador = 2 * (ϕα - ϕ0 - dϕ0 * α)
+    if denominador <= 0
+        return α_backtracking
+    end
+
+    α_quad = -dϕ0 * α^2 / denominador
+    α_min = 0.1 * α
+    α_max = 0.5 * α
+    if isfinite(α_quad) && α_min <= α_quad <= α_max
+        return α_quad
+    end
+    return α_backtracking
+end
+
+function (ls::BoxQuadraticArmijoWolfe)(d, x, s, α0, x_ls, ϕ0, dϕ0)
+    α = alpha_inicial_caixa(x, s, ls.lower, ls.upper, α0)
+    if α <= 0 || dϕ0 >= 0
+        x_ls .= x
+        return zero(α0), ϕ0
+    end
+
+    melhor_α = zero(α)
+    melhor_ϕ = ϕ0
+    achou_armijo = false
+    gtrial = similar(x)
+
+    for _ in 1:ls.maxiter
+        @. x_ls = x + α * s
+        ϕα = Optim.value(d, x_ls)
+
+        if isfinite(ϕα) && ϕα <= ϕ0 + ls.c1 * α * dϕ0
+            achou_armijo = true
+            melhor_α = α
+            melhor_ϕ = ϕα
+
+            ls.g!(gtrial, x_ls)
+            dϕα = dot(gtrial, s)
+            if dϕα >= ls.c2 * dϕ0
+                return α, ϕα
+            end
+        end
+
+        α = alpha_interpolacao_quadratica(α, ϕα, ϕ0, dϕ0, ls.ρ)
+        if α <= eps(typeof(α))
+            break
+        end
+    end
+
+    if achou_armijo
+        @. x_ls = x + melhor_α * s
+        return melhor_α, melhor_ϕ
+    end
+
+    x_ls .= x
+    return zero(α0), ϕ0
+end
+
+
 
 
 

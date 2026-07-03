@@ -20,6 +20,40 @@ struct struct_Result
     x_final::Vector
 end
 
+# X_ref = fill(0.09, 101)
+
+# tempo = time()
+# jac = sv_fork(X_ref, 31.0)
+# tempo = time() - tempo
+# print("$tempo \n")
+
+# aux_derivada(x) = sv_fork(x, 31.0)
+
+
+# n_aux = length(X_ref)
+
+# cfg_bfgs = ForwardDiff.JacobianConfig(
+#     aux_derivada,
+#     X_ref,
+#     ForwardDiff.Chunk{n_aux}()
+# )
+
+# tempo = time()
+
+# J = ForwardDiff.jacobian(aux_derivada, X_ref, cfg_bfgs)
+
+# tempo = time() - tempo
+
+# jac = jac - J 
+# norma_J = norm(jac)
+
+# println("$tempo \n")
+# println("norma da Jacobiana = $norma_J")
+
+
+
+
+
 function teste_derivada_tempo()
 
     df = DataFrame(
