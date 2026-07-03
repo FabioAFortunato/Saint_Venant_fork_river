@@ -46,7 +46,7 @@ function teste_derivada_tempo()
     end
 
     modelo = lm(@formula(tempo_derivada ~ dim), df)
-    b, a = coef(modelo)
+    a, b = coef(modelo)
 
     df_plot = sort(df, :dim)
 
