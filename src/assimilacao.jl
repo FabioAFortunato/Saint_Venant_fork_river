@@ -699,6 +699,72 @@ function sv_fork_new(
 end
 
 
+function assimilation_rmsd_heatmap(; 
+    tin = 0.0,
+    tend = 31.0,
+    grid_points = 50,
+    lower = 0.05,
+    upper = 0.3,
+    rmsd_max = 3.0,
+    fun::Function = sv_fork_new,
+    output = arquivo_em_results("assimilacao_heatmap_tend_31.pdf"),
+)
+    grid = collect(range(lower, upper, length = grid_points))
+    Z = Matrix{Float64}(undef, grid_points, grid_points)
+
+    total = grid_points * grid_points
+    aval = 0
+
+    for (j, n2) in enumerate(grid)
+        for (i, n1) in enumerate(grid)
+            aval += 1
+            resultado = fun([n1, n2], tin, tend, nothing)
+            erro = resultado.erro
+            rmsd = norm(erro / sqrt(length(erro)))
+
+            if !isfinite(rmsd) || rmsd > rmsd_max
+                rmsd = rmsd_max
+            end
+
+            Z[j, i] = rmsd
+
+            if aval == 1 || aval % 1000 == 0 || aval == total
+                println("Heatmap assimilacao: avaliacao $aval/$total | n1 = $n1 | n2 = $n2 | RMSD = $rmsd")
+            end
+        end
+    end
+
+    p = heatmap(
+        grid,
+        grid,
+        Z,
+        xlabel = "Manning 1",
+        ylabel = "Manning 2",
+        colorbar_title = "RMSD",
+        clim = (0.0, rmsd_max),
+        aspect_ratio = :equal,
+        background_color = :white,
+        background_color_inside = :white,
+    )
+
+    contour!(
+        p,
+        grid,
+        grid,
+        Z,
+        linewidth = 1.2,
+        color = :black,
+        alpha = 0.45,
+    )
+
+    mkpath(dirname(output))
+    savefig(p, output)
+    println("Heatmap de assimilacao salvo em: ", output)
+
+    return (; plot = p, n1 = grid, n2 = grid, RMSD = Z, output)
+end
+
+
 
 function plot_assimilation_profiles(history)
     if isempty(history)
