@@ -743,6 +743,8 @@ function assimilation_rmsd_heatmap(;
         colorbar_title = "RMSD",
         clim = (0.0, rmsd_max),
         aspect_ratio = :equal,
+        xlims = (0.05, 0.30),
+        ylims = (0.05, 0.30),
         background_color = :white,
         background_color_inside = :white,
     )
