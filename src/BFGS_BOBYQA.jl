@@ -67,7 +67,7 @@ function run_problems(;
     upper_bfgs = fill(0.5, dim)
 
     X_ref = copy(X_prev)
-    tend_derivada_bfgs = Float64(bfgs_derivative_tend)
+    tend_derivada_bfgs = Float64(tins)
 
     function f_bfgs(ng)
         resultado = fun(ng, tbeg, tend, estado_prev)
