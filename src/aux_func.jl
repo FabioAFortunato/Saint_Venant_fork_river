@@ -121,7 +121,6 @@ function safe_rand_manning(;n = 101)
     end
 end
 
-
 struct ArmijoThenWolfe{G}
     g!::G
     c1::Float64
@@ -186,89 +185,110 @@ struct BoxQuadraticArmijoWolfe{G,L,U}
     g!::G
     lower::L
     upper::U
+    trust_radius::Float64
     c1::Float64
     c2::Float64
     ρ::Float64
     maxiter::Int
 end
 
-function BoxQuadraticArmijoWolfe(g!, lower, upper; c1 = 1e-4, c2 = 0.9, ρ = 0.5, maxiter = 20)
-    return BoxQuadraticArmijoWolfe(g!, lower, upper, c1, c2, ρ, maxiter)
+function BoxQuadraticArmijoWolfe(
+    g!,
+    lower,
+    upper;
+    trust_radius = 0.1,
+    c1 = 1e-2,
+    c2 = 0.9,
+    ρ = 0.5,
+    maxiter = 20,
+)
+    return BoxQuadraticArmijoWolfe(
+        g!,
+        lower,
+        upper,
+        Float64(trust_radius),
+        c1,
+        c2,
+        ρ,
+        maxiter,
+    )
 end
 
 function alpha_inicial_caixa(x, s, lower, upper, α0)
-    α = α0
+    αmin = zero(α0)
+    αmax = typemax(typeof(α0))
+
     for i in eachindex(x, s, lower, upper)
-        if s[i] > 0
-            α = min(α, (upper[i] - x[i]) / s[i])
-        elseif s[i] < 0
-            α = min(α, (lower[i] - x[i]) / s[i])
+        if s[i] == 0
+            if x[i] < lower[i] || x[i] > upper[i]
+                return zero(α0), -one(α0)
+            end
+            continue
         end
-    end
-    return max(zero(α0), α)
-end
 
-function alpha_interpolacao_quadratica(α, ϕα, ϕ0, dϕ0, ρ)
-    α_backtracking = ρ * α
-    if !(isfinite(ϕα) && isfinite(dϕ0))
-        return α_backtracking
-    end
+        α_lower = (lower[i] - x[i]) / s[i]
+        α_upper = (upper[i] - x[i]) / s[i]
+        entrada = min(α_lower, α_upper)
+        saida = max(α_lower, α_upper)
 
-    denominador = 2 * (ϕα - ϕ0 - dϕ0 * α)
-    if denominador <= 0
-        return α_backtracking
+        αmin = max(αmin, entrada)
+        αmax = min(αmax, saida)
     end
 
-    α_quad = -dϕ0 * α^2 / denominador
-    α_min = 0.1 * α
-    α_max = 0.5 * α
-    if isfinite(α_quad) && α_min <= α_quad <= α_max
-        return α_quad
-    end
-    return α_backtracking
+    return αmin, αmax
 end
 
 function (ls::BoxQuadraticArmijoWolfe)(d, x, s, α0, x_ls, ϕ0, dϕ0)
-    α = alpha_inicial_caixa(x, s, ls.lower, ls.upper, α0)
-    if α <= 0 || dϕ0 >= 0
+    lower_local = max.(ls.lower, x .- ls.trust_radius)
+    upper_local = min.(ls.upper, x .+ ls.trust_radius)
+
+    αmin, αmax = alpha_inicial_caixa(x, s, lower_local, upper_local, α0)
+    if αmax < αmin || αmax <= 0 || dϕ0 >= 0
         x_ls .= x
-        return zero(α0), ϕ0
+        return zero(αmax), ϕ0
     end
 
-    melhor_α = zero(α)
-    melhor_ϕ = ϕ0
-    achou_armijo = false
-    gtrial = similar(x)
+    α_inicial = clamp(α0, αmin, αmax)
+
+    function ϕ_caixa(α)
+        if α < αmin || α > αmax
+            return Inf
+        end
+        @. x_ls = x + α * s
+        return Optim.value(d, x_ls)
+    end
+
+    α = α_inicial
+    ϕα = ϕ_caixa(α)
 
     for _ in 1:ls.maxiter
-        @. x_ls = x + α * s
-        ϕα = Optim.value(d, x_ls)
+        gtd = α * dϕ0
 
-        if isfinite(ϕα) && ϕα <= ϕ0 + ls.c1 * α * dϕ0
-            achou_armijo = true
-            melhor_α = α
-            melhor_ϕ = ϕα
-
-            ls.g!(gtrial, x_ls)
-            dϕα = dot(gtrial, s)
-            if dϕα >= ls.c2 * dϕ0
-                return α, ϕα
-            end
+        if isfinite(ϕα) && ϕα < ϕ0 + ls.c1 * gtd
+            @. x_ls = x + α * s
+            return α, ϕα
         end
 
-        α = alpha_interpolacao_quadratica(α, ϕα, ϕ0, dϕ0, ls.ρ)
-        if α <= eps(typeof(α))
+        if α <= 0.1 * α_inicial
+            α /= 2
+        else
+            denominador = 2 * (ϕα - ϕ0 - gtd)
+            α_quad = denominador > 0 ? -gtd * α / denominador : α / 2
+            if !(isfinite(α_quad)) || α_quad <= 0.1 * α || α_quad >= 0.9 * α
+                α_quad = α / 2
+            end
+            α = α_quad
+        end
+
+        if α < αmin || α <= eps(typeof(α))
             break
         end
-    end
 
-    if achou_armijo
-        @. x_ls = x + melhor_α * s
-        return melhor_α, melhor_ϕ
+        ϕα = ϕ_caixa(α)
     end
 
     x_ls .= x
-    return zero(α0), ϕ0
+    return zero(αmax), ϕ0
 end
 
 

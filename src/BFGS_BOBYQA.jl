@@ -30,6 +30,8 @@ function run_problems(;
     penalty_weight = 1.0e6,
     f_calls_limit = 50,
     g_calls_limit = 20,
+    bfgs_x_abstol = 0.0,
+    bfgs_derivative_tend = 5.0,
     iterations = 10,
     rhobeg = 0.05,
     rhoend = 0.001,
@@ -64,6 +66,7 @@ function run_problems(;
     upper_bfgs = fill(0.5, dim)
 
     X_ref = copy(X_prev)
+    tend_derivada_bfgs = Float64(bfgs_derivative_tend)
 
     function f_bfgs(ng)
         resultado = fun(ng, tbeg, tend, estado_prev)
@@ -84,7 +87,26 @@ function run_problems(;
         return sse
     end
 
+    function f_bfgs_derivada(ng)
+        resultado = fun(ng, tbeg, tend_derivada_bfgs, estado_prev)
+        erro = resultado.erro
+
+        sse = dot(erro, erro)
+        if isnan(sse)
+            return 1.0e26
+        end
+
+        return sse
+    end
+
     f_penalizada_bfgs(x_vars) = f_bfgs(x_vars) + penalidade_caixa_externa(
+            x_vars,
+            lower_bfgs,
+            upper_bfgs;
+            rho = penalty_weight,
+        )
+
+    f_penalizada_bfgs_derivada(x_vars) = f_bfgs_derivada(x_vars) + penalidade_caixa_externa(
             x_vars,
             lower_bfgs,
             upper_bfgs;
@@ -99,6 +121,17 @@ function run_problems(;
     metodos = lowercase(String(method)) == "all" ?
         [:bfgs, :spg, :bobyqa, :mads] :
         [normaliza_metodo(method)]
+
+    cfg_bfgs_derivada = ForwardDiff.GradientConfig(
+            f_penalizada_bfgs_derivada,
+            X_ref,
+            ForwardDiff.Chunk{dim}()
+        )
+
+    function g_bfgs_derivada!(G, x_k)
+        ForwardDiff.gradient!(G, f_penalizada_bfgs_derivada, x_k, cfg_bfgs_derivada)
+        return G
+    end
 
     cfg_bfgs = ForwardDiff.GradientConfig(
             f_penalizada_bfgs,
@@ -136,6 +169,9 @@ function run_problems(;
             write(file, "lower = $(collect(lower_bfgs))\n")
             write(file, "upper = $(collect(upper_bfgs))\n")
             write(file, "rmsd_tol = $rmsd_tol\n")
+            if metodo == :bfgs
+                write(file, "derivative_tend = $tend_derivada_bfgs\n")
+            end
             write(file, "\niter\tf\t$colunas_x\n")
         end
         return arquivo
@@ -203,20 +239,21 @@ function run_problems(;
             inicio_metodo = time()
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
-                g_obj!,
+                g_bfgs_derivada!,
                 copy(X0),
-                BFGS(linesearch = BoxQuadraticArmijoWolfe(g_obj!, lower_bfgs, upper_bfgs)),
+                BFGS(linesearch = BoxQuadraticArmijoWolfe(g_bfgs_derivada!, lower_bfgs, upper_bfgs)),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
                     g_calls_limit = g_calls_limit,
+                    x_abstol = bfgs_x_abstol,
                 ),
             )
             tempo_bfgs = time() - inicio_metodo
             X_bfgs = Optim.minimizer(resultado_bfgs)
             fval_bfgs = Optim.minimum(resultado_bfgs)
             G_bfgs = similar(X_bfgs)
-            g_obj!(G_bfgs, X_bfgs)
+            g_bfgs_derivada!(G_bfgs, X_bfgs)
             println(norm(G_bfgs))
             resumo_bfgs = (;
                 f = fval_bfgs,
@@ -224,10 +261,12 @@ function run_problems(;
                 avaliacoes = avaliacoes_bfgs[],
                 maxiter = iterations,
                 maxfun = f_calls_limit,
+                x_abstol = bfgs_x_abstol,
+                derivative_tend = tend_derivada_bfgs,
             )
             status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
             resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\nx_abstol = $bfgs_x_abstol\nderivative_tend = $tend_derivada_bfgs\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
 
         elseif metodo == :spg
