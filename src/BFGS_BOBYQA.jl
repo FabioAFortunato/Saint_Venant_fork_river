@@ -198,6 +198,18 @@ function run_problems(;
         end
     end
 
+    function criterio_parada_spg(ierr)
+        if ierr == 0
+            return "Convergencia atingida"
+        elseif ierr == 1
+            return "Numero maximo de iteracoes (nitmax) atingido"
+        elseif ierr == 2
+            return "Numero maximo de avaliacoes da funcao (nfevalmax) atingido"
+        else
+            return "Criterio de parada desconhecido (ierr = $ierr)"
+        end
+    end
+
     function monta_resultado(metodo, resultado, x_final, f_final, arquivo; status = "", avaliacoes = missing, tempo_s = missing)
         estado_final = fun(x_final, tbeg, tend, estado_prev)
         RMSD_final = norm(estado_final.erro / sqrt(size(estado_final.erro, 1)))
@@ -301,8 +313,10 @@ function run_problems(;
             println(norm(G_spg))
             fval_spg = resultado_spg.f
             avaliacoes_spg = resultado_spg.nfeval
+            println("Criterio de parada do SPGBox: ", criterio_parada_spg(resultado_spg.ierr))
+            println("SPGBox finalizou com nit = ", resultado_spg.nit, ", nfeval = ", resultado_spg.nfeval, ", gnorm = ", resultado_spg.gnorm)
             resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)
-            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ngnorm = $(resultado_spg.gnorm)\n")
+            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ncriterio_parada = $(criterio_parada_spg(resultado_spg.ierr))\ngnorm = $(resultado_spg.gnorm)\n")
             resultados[:spg] = resultado
 
         elseif metodo == :bobyqa
