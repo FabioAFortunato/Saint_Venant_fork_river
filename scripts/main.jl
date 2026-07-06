@@ -15,6 +15,7 @@ struct struct_Result
     dim::Int
     tmax::Float64
     RMSD::Float64
+    gnorm::Float64
     evaluation::Int
     time::Float64
     x_final::Vector
@@ -135,6 +136,7 @@ function teste_todos_novo(;
                             res[2].dim, 
                             res[2].tend,
                             res[2].RMSD,
+                            res[2].gnorm,
                             res[2].avaliacoes,
                             res[2].tempo_s,
                             res[2].X))
@@ -147,6 +149,7 @@ function teste_todos_novo(;
         tmax = [r.tmax for r in todos_resultados],
         n_grid = [r.dim for r in todos_resultados],
         RMSD = [r.RMSD for r in todos_resultados],
+        GradNorm = [r.gnorm for r in todos_resultados],
         Time = [r.time for r in todos_resultados],
         Evaluations = [r.evaluation for r in todos_resultados],
     )
@@ -158,9 +161,9 @@ function teste_todos_novo(;
         println(io, raw"\centering")
         println(io, raw"\caption{Results obtained by the solvers for the smoothed Saint-Venant model.}")
         println(io, raw"\label{tab:methods_new_SV}")
-        println(io, raw"\begin{tabular}{c|c|cccc}")
+        println(io, raw"\begin{tabular}{c|c|ccccc}")
         println(io, raw"\hline")
-        println(io, raw"Method & $t_{\max}$ & $n_{grid}$ & RMSD & Time (s) & Evaluations \\ \hline")
+        println(io, raw"Method & $t_{\max}$ & $n_{grid}$ & RMSD & $\|\nabla f\|$ & Time (s) & Evaluations \\ \hline")
 
 
         methods = unique(df.Method)
@@ -181,18 +184,19 @@ function teste_todos_novo(;
                     tmax_entry = j == 1 ? "\\multirow{$n_linhas_tmax}{*}{$(Int(tmax))}" : ""
 
                     rmsd_str = @sprintf("%.4f", row.RMSD)
+                    gnorm_str = @sprintf("%.4e", row.GradNorm)
                     time_str = @sprintf("%.2f", row.Time)
 
                     println(io,
                         "$(method_entry) & $(tmax_entry) & $(row.n_grid) & " *
-                        "$(rmsd_str) & $(time_str) & $(row.Evaluations) \\\\"
+                        "$(rmsd_str) & $(gnorm_str) & $(time_str) & $(row.Evaluations) \\\\"
                     )
                 end
 
                 first_method_row = false
 
                 if k < length(tmax_values)
-                    println(io, raw"\cline{2-6}")
+                    println(io, raw"\cline{2-7}")
                 end
             end
 

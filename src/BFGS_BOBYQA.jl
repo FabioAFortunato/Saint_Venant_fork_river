@@ -28,13 +28,14 @@ function run_problems(;
     tins = 5.0,
     λ = 1.0,
     penalty_weight = 1.0e6,
-    f_calls_limit = 100,
-    g_calls_limit = 50,
+    f_calls_limit = 200,
+    g_calls_limit = 100,
     bfgs_x_abstol = 0.0,
     bfgs_derivative_tend = 5.0,
-    iterations = 50,
+    iterations = 100,
     rhobeg = 0.05,
-    rhoend = 0.001,
+    rhoend = 0.0001,
+    grad_tol = 0.001,
     rmsd_tol = 0.09,
     fun::Function = sv_fork_assimilation,
     method = "all"
@@ -171,6 +172,12 @@ function run_problems(;
             write(file, "rmsd_tol = $rmsd_tol\n")
             if metodo == :bfgs
                 write(file, "derivative_tend = $tend_derivada_bfgs\n")
+                write(file, "grad_tol = $grad_tol\n")
+            elseif metodo == :spg
+                write(file, "grad_tol = $grad_tol\n")
+            elseif metodo in (:bobyqa, :mads)
+                write(file, "rhobeg = $rhobeg\n")
+                write(file, "rhoend = $rhoend\n")
             end
             write(file, "\niter\tf\t$colunas_x\n")
         end
@@ -213,9 +220,13 @@ function run_problems(;
     function monta_resultado(metodo, resultado, x_final, f_final, arquivo; status = "", avaliacoes = missing, tempo_s = missing)
         estado_final = fun(x_final, tbeg, tend, estado_prev)
         RMSD_final = norm(estado_final.erro / sqrt(size(estado_final.erro, 1)))
+        G_final = similar(x_final)
+        g_bfgs_raw!(G_final, x_final)
+        gnorm_final = norm(G_final)
         println("fval $(uppercase(String(metodo))) = ", f_final)
         println("RMSD após $(uppercase(String(metodo))) = ", RMSD_final)
         println("Avaliações $(uppercase(String(metodo))) = ", avaliacoes)
+        println("Norma do gradiente final $(uppercase(String(metodo))) = ", gnorm_final)
         println("Tempo $(uppercase(String(metodo))) = ", round(tempo_s, digits=6), " s")
         return (;
             metodo,
@@ -224,6 +235,7 @@ function run_problems(;
             dim,
             fval = f_final,
             RMSD = RMSD_final,
+            gnorm = gnorm_final,
             X = copy(x_final),
             estado = estado_final,
             result = resultado,
@@ -258,6 +270,7 @@ function run_problems(;
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
                     g_calls_limit = g_calls_limit,
+                    g_abstol = grad_tol,
                     x_abstol = bfgs_x_abstol,
                 ),
             )
@@ -273,12 +286,13 @@ function run_problems(;
                 avaliacoes = avaliacoes_bfgs[],
                 maxiter = iterations,
                 maxfun = f_calls_limit,
+                g_abstol = grad_tol,
                 x_abstol = bfgs_x_abstol,
                 derivative_tend = tend_derivada_bfgs,
             )
             status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
             resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\nx_abstol = $bfgs_x_abstol\nderivative_tend = $tend_derivada_bfgs\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nderivative_tend = $tend_derivada_bfgs\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
 
         elseif metodo == :spg
@@ -300,6 +314,7 @@ function run_problems(;
                 X_ref;
                 lower = lower_bfgs,
                 upper = upper_bfgs,
+                eps = grad_tol,
                 nitmax = iterations,
                 nfevalmax = f_calls_limit,
                 iprint = 2,
@@ -316,7 +331,7 @@ function run_problems(;
             println("Criterio de parada do SPGBox: ", criterio_parada_spg(resultado_spg.ierr))
             println("SPGBox finalizou com nit = ", resultado_spg.nit, ", nfeval = ", resultado_spg.nfeval, ", gnorm = ", resultado_spg.gnorm)
             resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)
-            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ncriterio_parada = $(criterio_parada_spg(resultado_spg.ierr))\ngnorm = $(resultado_spg.gnorm)\n")
+            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ngrad_tol = $grad_tol\ncriterio_parada = $(criterio_parada_spg(resultado_spg.ierr))\ngnorm = $(resultado_spg.gnorm)\n")
             resultados[:spg] = resultado
 
         elseif metodo == :bobyqa
@@ -333,6 +348,8 @@ function run_problems(;
             opt = Opt(:LN_BOBYQA, dim)
             lower_bounds!(opt, lower_bfgs)
             upper_bounds!(opt, upper_bfgs)
+            initial_step!(opt, fill(Float64(rhobeg), dim))
+            xtol_abs!(opt, fill(Float64(rhoend), dim))
             maxeval!(opt, f_calls_limit)
             min_objective!(opt, objetivo_bobyqa)
 
@@ -341,7 +358,7 @@ function run_problems(;
             tempo_bobyqa = time() - inicio_metodo
             avaliacoes_bobyqa = iter_bobyqa[]
             resultado = monta_resultado(:bobyqa, status_bobyqa, X_bobyqa, fval_bobyqa, arquivo; status = status_bobyqa, avaliacoes = avaliacoes_bobyqa, tempo_s = tempo_bobyqa)
-            salva_resumo!(arquivo; f_final = fval_bobyqa, RMSD = resultado.RMSD, x_final = X_bobyqa, status = status_bobyqa, avaliacoes = avaliacoes_bobyqa, tempo_s = tempo_bobyqa)
+            salva_resumo!(arquivo; f_final = fval_bobyqa, RMSD = resultado.RMSD, x_final = X_bobyqa, status = status_bobyqa, avaliacoes = avaliacoes_bobyqa, tempo_s = tempo_bobyqa, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\n")
             resultados[:bobyqa] = resultado
 
         elseif metodo == :mads
@@ -384,7 +401,7 @@ function run_problems(;
             fval_mads = Float64(f_penalizada_bfgs(X_mads))
             avaliacoes_mads = length(pontos_mads)
             resultado = monta_resultado(:mads, resultado_mads, X_mads, fval_mads, arquivo; status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads)
-            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "factivel = $(resultado_mads.feasible)\n")
+            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\nfactivel = $(resultado_mads.feasible)\n")
             resultados[:mads] = resultado
 
         else
