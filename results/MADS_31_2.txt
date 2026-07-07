@@ -8,3 +8,14 @@ rhobeg = 0.05
 rhoend = 0.0001
 
 iter	f	x1	x2
+
+Resumo final
+status = -8
+f_final = 22.167925672799463
+RMSD = 0.2560968155085258
+avaliacoes = 0
+tempo_s = 0.001994
+x_final = [0.09, 0.09]
+rhobeg = 0.05
+rhoend = 0.0001
+factivel = nothing

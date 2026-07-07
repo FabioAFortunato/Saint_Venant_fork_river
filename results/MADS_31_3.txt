@@ -1,21 +1,21 @@
 Metodo = MADS
-tbeg = 0.0 | tend = 31.0 | dim = 1
-x0 = [0.09]
-lower = [0.0]
-upper = [0.5]
+tbeg = 0.0 | tend = 31.0 | dim = 3
+x0 = [0.09, 0.09, 0.09]
+lower = [0.0, 0.0, 0.0]
+upper = [0.5, 0.5, 0.5]
 rmsd_tol = 0.09
 rhobeg = 0.05
 rhoend = 0.0001
 
-iter	f	x1
+iter	f	x1	x2	x3
 
 Resumo final
 status = -8
 f_final = 22.1679256727995
 RMSD = 0.256096815508526
 avaliacoes = 0
-tempo_s = 0.001898
-x_final = [0.09]
+tempo_s = 0.002906
+x_final = [0.09, 0.09, 0.09]
 rhobeg = 0.05
 rhoend = 0.0001
 factivel = nothing
