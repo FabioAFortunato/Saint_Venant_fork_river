@@ -1,0 +1,23 @@
+Metodo = BOBYQA
+tbeg = 0.0 | tend = 1.0 | dim = 1
+x0 = [0.09]
+lower = [0.0]
+upper = [0.5]
+rmsd_tol = 0.09
+rhobeg = 0.05
+rhoend = 0.0001
+
+iter	f	x1
+0	0.00010000000000000018	0.09
+1	0.0016000000000000007	0.14
+2	0.003600000000000001	0.039999999999999994
+
+Resumo final
+status = MAXEVAL_REACHED
+f_final = 0.00010000000000000018
+RMSD = 0.010000000000000009
+avaliacoes = 3
+tempo_s = 0.004081
+x_final = [0.09]
+rhobeg = 0.05
+rhoend = 0.0001

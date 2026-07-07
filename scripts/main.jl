@@ -114,10 +114,7 @@ function teste_todos_novo(;
     dims = 3,
     filename = "results_new_SV.tex",
     method = "all",
-    f_calls_limit = 50,
-    g_calls_limit = 20,
-    iterations = 10,
-)
+    )
     todos_resultados = struct_Result[]
     for t in tins
         for i = 1:dims
@@ -125,9 +122,6 @@ function teste_todos_novo(;
                 X0 = fill(0.09, i),
                 tins = t,
                 method = method,
-                f_calls_limit = f_calls_limit,
-                g_calls_limit = g_calls_limit,
-                iterations = iterations,
             )
             for res in res_todos
                 push!(todos_resultados, 

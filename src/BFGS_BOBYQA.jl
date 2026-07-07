@@ -31,7 +31,6 @@ function run_problems(;
     f_calls_limit = 200,
     g_calls_limit = 100,
     bfgs_x_abstol = 0.0,
-    bfgs_derivative_tend = 5.0,
     iterations = 100,
     rhobeg = 0.05,
     rhoend = 0.0001,
@@ -67,7 +66,6 @@ function run_problems(;
     upper_bfgs = fill(0.5, dim)
 
     X_ref = copy(X_prev)
-    tend_derivada_bfgs = Float64(tins)
 
     function f_bfgs(ng)
         resultado = fun(ng, tbeg, tend, estado_prev)
@@ -88,26 +86,7 @@ function run_problems(;
         return sse
     end
 
-    function f_bfgs_derivada(ng)
-        resultado = fun(ng, tbeg, tend_derivada_bfgs, estado_prev)
-        erro = resultado.erro
-
-        sse = dot(erro, erro)
-        if isnan(sse)
-            return 1.0e26
-        end
-
-        return sse
-    end
-
     f_penalizada_bfgs(x_vars) = f_bfgs(x_vars) + penalidade_caixa_externa(
-            x_vars,
-            lower_bfgs,
-            upper_bfgs;
-            rho = penalty_weight,
-        )
-
-    f_penalizada_bfgs_derivada(x_vars) = f_bfgs_derivada(x_vars) + penalidade_caixa_externa(
             x_vars,
             lower_bfgs,
             upper_bfgs;
@@ -122,17 +101,6 @@ function run_problems(;
     metodos = lowercase(String(method)) == "all" ?
         [:bfgs, :spg, :bobyqa, :mads] :
         [normaliza_metodo(method)]
-
-    cfg_bfgs_derivada = ForwardDiff.GradientConfig(
-            f_penalizada_bfgs_derivada,
-            X_ref,
-            ForwardDiff.Chunk{dim}()
-        )
-
-    function g_bfgs_derivada!(G, x_k)
-        ForwardDiff.gradient!(G, f_penalizada_bfgs_derivada, x_k, cfg_bfgs_derivada)
-        return G
-    end
 
     cfg_bfgs = ForwardDiff.GradientConfig(
             f_penalizada_bfgs,
@@ -171,7 +139,6 @@ function run_problems(;
             write(file, "upper = $(collect(upper_bfgs))\n")
             write(file, "rmsd_tol = $rmsd_tol\n")
             if metodo == :bfgs
-                write(file, "derivative_tend = $tend_derivada_bfgs\n")
                 write(file, "grad_tol = $grad_tol\n")
             elseif metodo == :spg
                 write(file, "grad_tol = $grad_tol\n")
@@ -263,9 +230,9 @@ function run_problems(;
             inicio_metodo = time()
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
-                g_bfgs_derivada!,
+                g_obj!,
                 copy(X0),
-                BFGS(linesearch = BoxQuadraticArmijoWolfe(g_bfgs_derivada!, lower_bfgs, upper_bfgs)),
+                BFGS(),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
@@ -278,7 +245,7 @@ function run_problems(;
             X_bfgs = Optim.minimizer(resultado_bfgs)
             fval_bfgs = Optim.minimum(resultado_bfgs)
             G_bfgs = similar(X_bfgs)
-            g_bfgs_derivada!(G_bfgs, X_bfgs)
+            g_obj!(G_bfgs, X_bfgs)
             println(norm(G_bfgs))
             resumo_bfgs = (;
                 f = fval_bfgs,
@@ -288,11 +255,10 @@ function run_problems(;
                 maxfun = f_calls_limit,
                 g_abstol = grad_tol,
                 x_abstol = bfgs_x_abstol,
-                derivative_tend = tend_derivada_bfgs,
             )
             status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
             resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nderivative_tend = $tend_derivada_bfgs\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
 
         elseif metodo == :spg
@@ -365,6 +331,12 @@ function run_problems(;
             println("Rodando MADS/NOMAD com dimensão = ", dim)
             pontos_mads = Vector{Vector{Float64}}()
             valores_mads = Float64[]
+            x0_mads = copy(X_ref)
+            lower_mads = copy(lower_bfgs)
+            upper_mads = copy(upper_bfgs)
+            @assert length(x0_mads) == dim
+            @assert length(lower_mads) == dim
+            @assert length(upper_mads) == dim
 
             function objetivo_mads(x)
                 valor = Float64(f_penalizada_bfgs(x))
@@ -378,6 +350,7 @@ function run_problems(;
             opcoes = NOMAD.NomadOptions(
                 display_degree = 0,
                 max_bb_eval = f_calls_limit,
+                eval_use_cache = false,
             )
 
             problema = NOMAD.NomadProblem(
@@ -386,22 +359,27 @@ function run_problems(;
                 ["OBJ"],
                 objetivo_mads,
                 input_types = fill("R", dim),
-                lower_bound = lower_bfgs,
-                upper_bound = upper_bfgs,
+                lower_bound = lower_mads,
+                upper_bound = upper_mads,
                 min_mesh_size = fill(Float64(rhoend), dim),
                 initial_mesh_size = fill(Float64(rhobeg), dim),
                 options = opcoes,
             )
 
             inicio_metodo = time()
-            resultado_mads = NOMAD.solve(problema, X_ref)
+            resultado_mads = NOMAD.solve(problema, x0_mads)
             tempo_mads = time() - inicio_metodo
-            melhor_indice = argmin(valores_mads)
-            X_mads = get(resultado_mads, :x_sol, pontos_mads[melhor_indice])
+            status_mads = get(resultado_mads, :status, "NOMAD sem avaliacoes validas")
+            X_mads = if isempty(valores_mads)
+                copy(x0_mads)
+            else
+                melhor_indice = argmin(valores_mads)
+                get(resultado_mads, :x_sol, pontos_mads[melhor_indice])
+            end
             fval_mads = Float64(f_penalizada_bfgs(X_mads))
             avaliacoes_mads = length(pontos_mads)
-            resultado = monta_resultado(:mads, resultado_mads, X_mads, fval_mads, arquivo; status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads)
-            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = resultado_mads.status, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\nfactivel = $(resultado_mads.feasible)\n")
+            resultado = monta_resultado(:mads, resultado_mads, X_mads, fval_mads, arquivo; status = status_mads, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads)
+            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = status_mads, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\nfactivel = $(get(resultado_mads, :feasible, missing))\n")
             resultados[:mads] = resultado
 
         else
