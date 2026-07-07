@@ -216,5 +216,7 @@ function teste_todos(; t = 5.0, x = [0.1; 0.06])
     mads_two_dim_problem(tmax = t, x0 = x)
 end
 
-
-
+function excluir_depois()
+    teste_todos_novo()
+    assimilation_rmsd_heatmap()
+end

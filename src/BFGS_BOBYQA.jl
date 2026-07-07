@@ -369,17 +369,19 @@ function run_problems(;
             inicio_metodo = time()
             resultado_mads = NOMAD.solve(problema, x0_mads)
             tempo_mads = time() - inicio_metodo
-            status_mads = get(resultado_mads, :status, "NOMAD sem avaliacoes validas")
-            X_mads = if isempty(valores_mads)
-                copy(x0_mads)
+            status_mads = hasproperty(resultado_mads, :status) ? resultado_mads.status : "NOMAD sem avaliacoes validas"
+            melhor_x_mads = isempty(valores_mads) ? copy(x0_mads) : copy(pontos_mads[argmin(valores_mads)])
+            x_sol_mads = hasproperty(resultado_mads, :x_sol) ? copy(float.(resultado_mads.x_sol)) : melhor_x_mads
+            X_mads = if length(x_sol_mads) == dim
+                x_sol_mads
             else
-                melhor_indice = argmin(valores_mads)
-                get(resultado_mads, :x_sol, pontos_mads[melhor_indice])
+                println("Aviso MADS: x_sol retornou dimensÃ£o $(length(x_sol_mads)) com dim esperado = $dim. Usando melhor ponto avaliado.")
+                melhor_x_mads
             end
             fval_mads = Float64(f_penalizada_bfgs(X_mads))
             avaliacoes_mads = length(pontos_mads)
             resultado = monta_resultado(:mads, resultado_mads, X_mads, fval_mads, arquivo; status = status_mads, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads)
-            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = status_mads, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\nfactivel = $(get(resultado_mads, :feasible, missing))\n")
+            salva_resumo!(arquivo; f_final = fval_mads, RMSD = resultado.RMSD, x_final = X_mads, status = status_mads, avaliacoes = avaliacoes_mads, tempo_s = tempo_mads, extra = "rhobeg = $rhobeg\nrhoend = $rhoend\nfactivel = $(hasproperty(resultado_mads, :feasible) ? resultado_mads.feasible : missing)\n")
             resultados[:mads] = resultado
 
         else
