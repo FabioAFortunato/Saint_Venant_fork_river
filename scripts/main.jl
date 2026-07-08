@@ -223,6 +223,7 @@ function excluir()
     X0 = [0.09, 0.09],
     tins = 31.0,
     n_points = 200,
+    fmax = 50.0,
     )
     plot_heatmap_bfgs_default_assimilacao(grid_points = 50)
 end

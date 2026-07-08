@@ -67,6 +67,12 @@ function arquivo_csv_busca_exaustiva(output)
     return isempty(ext) ? "$(output_string).csv" : "$(base).csv"
 end
 
+function arquivo_rmsd_busca_exaustiva(output)
+    output_string = String(output)
+    base, ext = splitext(output_string)
+    return isempty(ext) ? "$(output_string)_RMSD" : "$(base)_RMSD$(ext)"
+end
+
 function direcao_derivada_normalizada(g; sentido = :descida)
     ng = norm(g)
     if ng == 0
@@ -92,6 +98,7 @@ function plot_busca_exaustiva_derivada(
     fmax = 100.0,
     sentido = :descida,
     output = arquivo_em_results("busca_exaustiva_derivada.png"),
+    output_RMSD = output === nothing ? nothing : arquivo_rmsd_busca_exaustiva(output),
     data_output = output === nothing ? nothing : arquivo_csv_busca_exaustiva(output),
     titulo = "Busca exaustiva na direcao da derivada",
 )
@@ -117,10 +124,17 @@ function plot_busca_exaustiva_derivada(
         valores_plot[i] = valor_limitado_para_plot(valor, Float64(fmax))
     end
 
-    y_min = minimum(valores_plot)
+    valores_plot_RMSD = sqrt.(max.(valores_plot, 0.0) ./ length(alphas))
+
+    y_min = 0.0
     y_max = Float64(fmax)
+    y_min_RMSD = 0.0
+    y_max_RMSD = sqrt(Float64(fmax) / length(alphas))
     if y_min == y_max
         y_min -= 1.0
+    end
+    if y_min_RMSD == y_max_RMSD
+        y_min_RMSD -= 1.0
     end
 
     p = Plots.plot(
@@ -128,11 +142,22 @@ function plot_busca_exaustiva_derivada(
         valores_plot;
         xlabel = "alpha",
         ylabel = "f(x + alpha d)",
-        label = "funcao limitada",
+        label = "limited function",
         linewidth = 2,
         legend = :topright,
         title = titulo,
         ylims = (y_min, y_max),
+    )
+
+    p2 = Plots.plot(
+        alphas,
+        valores_plot_RMSD;
+        xlabel = "alpha",
+        ylabel = "RMSD(x + alpha d)",
+        label = "limited RMSD",
+        linewidth = 2,
+        legend = :topright,
+        ylims = (y_min_RMSD, y_max_RMSD),
     )
 
     Plots.hline!(p, [Float64(fmax)]; label = "teto = $(Float64(fmax))", linestyle = :dash)
@@ -142,25 +167,34 @@ function plot_busca_exaustiva_derivada(
         Plots.savefig(p, String(output))
     end
 
+    if output_RMSD !== nothing
+        mkpath(dirname(String(output_RMSD)))
+        Plots.savefig(p2, String(output_RMSD))
+    end
+
     if data_output !== nothing
         mkpath(dirname(String(data_output)))
         colunas_x = ["x$i" for i in 1:size(pontos, 2)]
-        tabela = Matrix{Any}(undef, length(alphas) + 1, 3 + length(colunas_x))
-        tabela[1, :] .= vcat(["alpha", "f", "f_plot"], colunas_x)
+        tabela = Matrix{Any}(undef, length(alphas) + 1, 4 + length(colunas_x))
+        tabela[1, :] .= vcat(["alpha", "f", "f_plot", "RMSD_plot"], colunas_x)
         tabela[2:end, 1] .= alphas
         tabela[2:end, 2] .= valores
         tabela[2:end, 3] .= valores_plot
-        tabela[2:end, 4:end] .= pontos
+        tabela[2:end, 4] .= valores_plot_RMSD
+        tabela[2:end, 5:end] .= pontos
         writedlm(data_output, tabela, ',')
     end
 
     return (;
         plot = p,
+        plot_RMSD = p2,
         output,
+        output_RMSD,
         data_output,
         alphas,
         valores,
         valores_plot,
+        valores_plot_RMSD,
         pontos,
         direcao,
         gradiente = copy(g),
@@ -179,10 +213,15 @@ function le_busca_exaustiva_derivada(data_output)
     alphas = Float64.(dados[2:end, 1])
     valores = Float64.(dados[2:end, 2])
     valores_plot = Float64.(dados[2:end, 3])
-    pontos = Matrix{Float64}(undef, length(alphas), size(dados, 2) - 3)
+    tem_rmsd = size(dados, 2) >= 5 && String(dados[1, 4]) == "RMSD_plot"
+    valores_plot_RMSD = tem_rmsd ?
+        Float64.(dados[2:end, 4]) :
+        sqrt.(max.(valores_plot, 0.0) ./ length(alphas))
+    primeira_coluna_x = tem_rmsd ? 5 : 4
+    pontos = Matrix{Float64}(undef, length(alphas), size(dados, 2) - primeira_coluna_x + 1)
 
     for j in axes(pontos, 2)
-        pontos[:, j] .= Float64.(dados[2:end, j + 3])
+        pontos[:, j] .= Float64.(dados[2:end, j + primeira_coluna_x - 1])
     end
 
     return (;
@@ -190,6 +229,7 @@ function le_busca_exaustiva_derivada(data_output)
         alphas,
         valores,
         valores_plot,
+        valores_plot_RMSD,
         pontos,
     )
 end
@@ -255,6 +295,38 @@ function penalidade_caixa_externa(x, lb, ub; rho=1.0e6)
     return rho * penalidade
 end
 
+function objetivo_sse_assimilacao(fun, tbeg, tend, estado_prev; fallback = 1.0e26, mostra_rmsd = false)
+    return function f_base(x)
+        resultado = fun(x, tbeg, tend, estado_prev)
+        erro = resultado.erro
+
+        if mostra_rmsd && !(eltype(x) <: ForwardDiff.Dual)
+            RMSD_atual = norm(erro / sqrt(size(erro, 1)))
+            print("RMSD = $RMSD_atual \n")
+        end
+
+        sse = dot(erro, erro)
+        return isfinite(sse) ? sse : fallback
+    end
+end
+
+function objetivo_penalizado_caixa(f_base, lb, ub; rho = 1.0e6)
+    return x -> f_base(x) + penalidade_caixa_externa(x, lb, ub; rho = rho)
+end
+
+function objetivo_penalizado_caixa_com_gradiente(f_base, x_ref, lb, ub; rho = 1.0e6)
+    f_penalizada = objetivo_penalizado_caixa(f_base, lb, ub; rho = rho)
+    dim = length(x_ref)
+    cfg = ForwardDiff.GradientConfig(f_penalizada, x_ref, ForwardDiff.Chunk{dim}())
+
+    function g!(G, x)
+        ForwardDiff.gradient!(G, f_penalizada, x, cfg)
+        return G
+    end
+
+    return f_penalizada, g!
+end
+
 
 function safe_rand_manning(;n = 101)
     while true
@@ -308,9 +380,6 @@ struct QuadraticBacktracking
     ρ::Float64
     maxiter::Int
     fmax::Float64
-    min_factor::Float64
-    max_factor::Float64
-    flat_tol::Float64
 end
 
 function QuadraticBacktracking(;
@@ -318,106 +387,29 @@ function QuadraticBacktracking(;
     ρ = 0.5,
     maxiter = 20,
     fmax = 10000.0,
-    min_factor = 0.1,
-    max_factor = 0.5,
-    flat_tol = 1.0e-8,
 )
     return QuadraticBacktracking(
         Float64(c1),
         Float64(ρ),
         Int(maxiter),
         Float64(fmax),
-        Float64(min_factor),
-        Float64(max_factor),
-        Float64(flat_tol),
     )
-end
-
-function valores_quase_planos(valores, flat_tol)
-    escala = max(1.0, maximum(abs.(valores)))
-    return maximum(valores) - minimum(valores) <= flat_tol * escala
 end
 
 function (ls::QuadraticBacktracking)(d, x, s, α0, x_ls, ϕ0, dϕ0)
     α = α0
-    bons_α = Float64[]
-    bons_ϕ = Float64[]
-    melhor_α = zero(α0)
-    melhor_ϕ = ϕ0
 
     for _ in 1:ls.maxiter
         @. x_ls = x + α * s
         ϕα = Optim.value(d, x_ls)
 
-        if isfinite(ϕα) && ϕα < ls.fmax
-            push!(bons_α, Float64(α))
-            push!(bons_ϕ, Float64(ϕα))
-
-            if ϕα <= ϕ0 + ls.c1 * α * dϕ0
-                melhor_α = α
-                melhor_ϕ = ϕα
-            end
-
-            if length(bons_α) >= 2
-                α1, α2 = bons_α[end-1], bons_α[end]
-                ϕ1, ϕ2 = bons_ϕ[end-1], bons_ϕ[end]
-                d1 = ϕ1 - ϕ0
-                d2 = ϕ2 - ϕ0
-
-                if valores_quase_planos((ϕ0, ϕ1, ϕ2), ls.flat_tol)
-                    if melhor_α > 0
-                        @. x_ls = x + melhor_α * s
-                        return melhor_α, melhor_ϕ
-                    end
-
-                    x_ls .= x
-                    return zero(α0), ϕ0
-                end
-
-                c = (d2 / α2 - d1 / α1) / (α2 - α1)
-                b = d1 / α1 - c * α1
-                α_quad = c > 0 ? -b / (2 * c) : NaN
-
-                if isfinite(α_quad) && α_quad > 0
-                    limite_min = ls.min_factor * min(α1, α2)
-                    limite_max = max(α1, α2)
-                    α_quad = clamp(α_quad, limite_min, limite_max)
-
-                    @. x_ls = x + α_quad * s
-                    ϕ_quad = Optim.value(d, x_ls)
-
-                    if valores_quase_planos((ϕ0, ϕ1, ϕ2, ϕ_quad), ls.flat_tol)
-                        if melhor_α > 0
-                            @. x_ls = x + melhor_α * s
-                            return melhor_α, melhor_ϕ
-                        end
-
-                        x_ls .= x
-                        return zero(α0), ϕ0
-                    end
-
-                    if ϕ_quad <= ϕ0 + ls.c1 * α_quad * dϕ0
-                        return α_quad, ϕ_quad
-                    end
-                end
-
-                if melhor_α > 0
-                    @. x_ls = x + melhor_α * s
-                    return melhor_α, melhor_ϕ
-                end
-
-                α *= ls.ρ
-            else
-                α *= ls.ρ
-            end
-        else
-            α *= ls.ρ
+        if isfinite(ϕα) &&
+           ϕα < ls.fmax &&
+           ϕα <= ϕ0 + ls.c1 * α * dϕ0
+            return α, ϕα
         end
-    end
 
-    if melhor_α > 0
-        @. x_ls = x + melhor_α * s
-        return melhor_α, melhor_ϕ
+        α *= ls.ρ
     end
 
     x_ls .= x
@@ -575,6 +567,110 @@ function trust_region_bfgs(
 end
 
 
+using Optim
+using LineSearches
+
+struct SafeThenBackTracking{BT}
+    fmax::Float64
+    ρ::Float64
+    maxiter::Int
+    bt::BT
+end
+
+SafeThenBackTracking(; fmax = 10000.0, ρ = 0.5, maxiter = 20, hagerzhang_maxiter = 50) =
+    SafeThenBackTracking(
+        fmax,
+        ρ,
+        maxiter,
+        LineSearches.HagerZhang(linesearchmax = Int(hagerzhang_maxiter)),
+    )
+
+    function (ls::SafeThenBackTracking)(d, x, s, α0, x_ls, ϕ0, dϕ0)
+        α = α0 > 0 ? α0 : one(α0)
+    
+        for _ in 1:ls.maxiter
+            @. x_ls = x + α * s
+            ϕα = Optim.value(d, x_ls)
+    
+            if isfinite(ϕα) && ϕα < ls.fmax && ϕα > 0.6 * ϕ0
+    
+                return ls.bt(d, x, s, α, x_ls, ϕ0, dϕ0)
+    
+            elseif isfinite(ϕα) && ϕα < ls.fmax && ϕα <= 0.6 * ϕ0
+    
+                αq, ϕq, accepted = quadratic_minimum_trial!(
+                    d, x, s, α, x_ls, ϕ0, dϕ0, ϕα;
+                    c1 = 1.0e-4,
+                    fmax = ls.fmax,
+                )
+    
+                if accepted
+                    return αq, ϕq
+                end
+    
+                # Se o mínimo quadrático não foi aceito,
+                # mas o passo atual já satisfaz Armijo, aceita α.
+                if ϕα <= ϕ0 + 1.0e-4 * α * dϕ0
+                    return α, ϕα
+                end
+            end
+    
+            α *= ls.ρ
+        end
+    
+        x_ls .= x
+        return zero(α0), ϕ0
+    end
+
+
+
+
+function quadratic_minimum_trial!(
+    d, x, s, α, x_ls, ϕ0, dϕ0, ϕα;
+    c1 = 1.0e-4,
+    fmax = 10000.0,
+    max_expand = 5.0,
+    )
+
+    # Precisamos de uma direção de descida e de um passo positivo
+    if !(α > 0) || !(dϕ0 < 0)
+        return α, ϕα, false
+    end
+
+    # q(t) = ϕ0 + dϕ0*t + a*t^2
+    a = (ϕα - ϕ0 - dϕ0 * α) / α^2
+
+    # Se a <= 0, o polinômio não tem mínimo finito
+    if !(isfinite(a)) || a <= 0
+        return α, ϕα, false
+    end
+
+    # Mínimo do polinômio quadrático
+    αq = -dϕ0 / (2a)
+
+    if !(isfinite(αq)) || αq <= 0
+        return α, ϕα, false
+    end
+
+    # Salvaguarda para não deixar o passo explodir
+    αq = min(αq, max_expand * α)
+
+    # Avalia a função real no mínimo previsto pelo polinômio
+    @. x_ls = x + αq * s
+    ϕq = Optim.value(d, x_ls)
+
+    # Aceita apenas se a função real for válida e satisfizer Armijo
+    if isfinite(ϕq) &&
+       ϕq < fmax &&
+       ϕq <= ϕ0 + c1 * αq * dϕ0
+        return αq, ϕq, true
+    end
+
+    # Se não aceitou αq, restaura x_ls para o passo original α
+    @. x_ls = x + α * s
+
+    return α, ϕα, false
+end
 
 
 # ng = fill(0.08, n_man + 1)

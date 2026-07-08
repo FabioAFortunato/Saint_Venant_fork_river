@@ -23,14 +23,14 @@ function hybrid_results_dir_for_tmax(tmax)
 end
 
 function plot_busca_exaustiva_derivada_run_problems(;
-    X0 = fill(0.09, 2),
-    tins = 5.0,
+    X0 = fill(0.09, 3),
+    tins = 31.0,
     penalty_weight = 1.0e6,
     fun::Function = sv_fork_assimilation,
     alpha_min = 0.0,
-    alpha_max = 1.0,
-    n_points = 200,
-    fmax = 10000.0,
+    alpha_max = 0.25,
+    n_points = 100,
+    fmax = 50.0,
     sentido = :descida,
     output = nothing,
     data_output = nothing,
@@ -43,29 +43,14 @@ function plot_busca_exaustiva_derivada_run_problems(;
     lower = zeros(dim)
     upper = fill(0.5, dim)
 
-    function f_base(x)
-        resultado = fun(x, tbeg, tend, estado_prev)
-        sse = dot(resultado.erro, resultado.erro)
-        return isfinite(sse) ? sse : 1.0e26
-    end
-
-    f_penalizada(x) = f_base(x) + penalidade_caixa_externa(
-        x,
+    f_base = objetivo_sse_assimilacao(fun, tbeg, tend, estado_prev)
+    f_penalizada, g! = objetivo_penalizado_caixa_com_gradiente(
+        f_base,
+        X_ref,
         lower,
         upper;
         rho = penalty_weight,
     )
-
-    cfg = ForwardDiff.GradientConfig(
-        f_penalizada,
-        X_ref,
-        ForwardDiff.Chunk{dim}(),
-    )
-
-    function g!(G, x)
-        ForwardDiff.gradient!(G, f_penalizada, x, cfg)
-        return G
-    end
 
     arquivo = output === nothing ?
         arquivo_em_results("busca_exaustiva_derivada_$(label_tmax(tend))_$(dim).png") :
@@ -73,8 +58,8 @@ function plot_busca_exaustiva_derivada_run_problems(;
     arquivo_dados = data_output === nothing ?
         arquivo_em_results("busca_exaustiva_derivada_$(label_tmax(tend))_$(dim).csv") :
         data_output
-
-    return plot_busca_exaustiva_derivada(
+    
+    p = plot_busca_exaustiva_derivada(
         f_penalizada,
         g!,
         X_ref;
@@ -85,8 +70,8 @@ function plot_busca_exaustiva_derivada_run_problems(;
         sentido = sentido,
         output = arquivo,
         data_output = arquivo_dados,
-        titulo = "Busca exaustiva na derivada | tend = $tend | dim = $dim",
-    )
+        )  
+    return p
 end
 
 
@@ -298,10 +283,11 @@ function run_problems(;
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
                 g_obj!,
-                lower_bfgs,
-                upper_bfgs,
+                # lower_bfgs,
+                # upper_bfgs,
                 copy(X0),
-                Fminbox(BFGS(linesearch = QuadraticBacktracking())),
+                # Fminbox(BFGS(linesearch = SafeThenBackTracking())),
+                BFGS(linesearch = SafeThenBackTracking(hagerzhang_maxiter=10)),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
