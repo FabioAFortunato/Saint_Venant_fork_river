@@ -4,7 +4,10 @@ using Optim
 using ForwardDiff
 
 ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
+using PGFPlotsX
 using Plots
+
+pgfplotsx()
 
 include("obj_func.jl")
 include("aux_func.jl")
@@ -1008,7 +1011,7 @@ function plot_heatmap_bfgs_default_assimilacao(;
     X0 = [0.09, 0.09],
     tin = 0.0,
     tend = 31.0,
-    grid_points = 100,
+    grid_points = 50,
     lower_grid = 0.05,
     upper_grid = 0.3,
     rmsd_max = 3.0,

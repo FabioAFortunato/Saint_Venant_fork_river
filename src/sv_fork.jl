@@ -11,6 +11,8 @@ using LinearAlgebra
 using PGFPlotsX
 using Plots
 
+pgfplotsx()
+
 include("../data/processed/dado_fork.jl")
 
 

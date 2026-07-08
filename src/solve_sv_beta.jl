@@ -3,7 +3,10 @@ using Optim
 using ForwardDiff
 
 ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
+using PGFPlotsX
 using Plots
+
+pgfplotsx()
 
 include("obj_func.jl")
 include("sv_fork.jl")

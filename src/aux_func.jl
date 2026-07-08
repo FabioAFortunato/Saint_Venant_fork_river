@@ -1,5 +1,9 @@
 
 using DelimitedFiles
+using PGFPlotsX
+using Plots
+
+pgfplotsx()
 
 function busca_perturbacao_segura(
     f,
@@ -94,7 +98,7 @@ function plot_busca_exaustiva_derivada(
     x0;
     alpha_min = 0.0,
     alpha_max = 1.0,
-    n_points = 200,
+    n_points = 100,
     fmax = 100.0,
     sentido = :descida,
     output = arquivo_em_results("busca_exaustiva_derivada.png"),
