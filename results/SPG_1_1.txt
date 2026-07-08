@@ -7,16 +7,16 @@ rmsd_tol = 0.09
 grad_tol = 0.001
 
 iter	f	x1
-0	9.999999403953592e-5	0.09000000029802321
+0	0.012099999278783812	0.09000000327825546
 
 Resumo final
 status = 1
-f_final = 9.999999403953592e-5
-RMSD = 0.009999999701976792
+f_final = 0.012099999278783812
+RMSD = 0.10999999672174456
 avaliacoes = 2
-tempo_s = 0.221192
-x_final = [0.09000000029802321]
+tempo_s = 0.235516
+x_final = [0.09000000327825546]
 iteracoes = 2
 grad_tol = 0.001
 criterio_parada = Numero maximo de iteracoes (nitmax) atingido
-gnorm = 0.019999999403953583
+gnorm = 0.21999999344348908

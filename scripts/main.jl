@@ -111,13 +111,14 @@ end
 
 function teste_todos_novo(;
     tins = [5.0, 15.0, 31.0],
+    dim_init = 1,
     dims = 3,
     filename = "results_new_SV.tex",
     method = "all",
     )
     todos_resultados = struct_Result[]
     for t in tins
-        for i = 1:dims
+        for i = dim_init:dims
             res_todos = run_problems(
                 X0 = fill(0.09, i),
                 tins = t,
@@ -216,7 +217,12 @@ function teste_todos(; t = 5.0, x = [0.1; 0.06])
     mads_two_dim_problem(tmax = t, x0 = x)
 end
 
-function excluir_depois()
-    teste_todos_novo()
-    assimilation_rmsd_heatmap()
+
+function excluir()
+    plot_busca_exaustiva_derivada_run_problems(
+    X0 = [0.09, 0.09],
+    tins = 31.0,
+    n_points = 200,
+    )
+    plot_heatmap_bfgs_default_assimilacao(grid_points = 50)
 end

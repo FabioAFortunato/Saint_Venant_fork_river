@@ -1,0 +1,25 @@
+Metodo = TRUST_REGION
+tbeg = 0.0 | tend = 1.0 | dim = 1
+x0 = [0.09]
+lower = [0.0]
+upper = [0.5]
+rmsd_tol = 0.09
+grad_tol = 0.001
+
+iter	f	x1
+0	0.012100000000000003	0.09
+1	0.0036	0.14
+2	8.999999823992142e-20	0.19999999970000001
+
+Resumo final
+status = gtol
+f_final = 8.999999823992142e-20
+RMSD = 2.999999970665357e-10
+avaliacoes = 3
+tempo_s = 0.626114
+x_final = [0.19999999970000001]
+maxiter = 5
+grad_tol = 0.001
+Delta0 = 0.05
+Delta_final = 0.1
+gnorm = 5.999999941330714e-10

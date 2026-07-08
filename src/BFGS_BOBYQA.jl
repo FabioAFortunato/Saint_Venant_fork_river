@@ -22,6 +22,73 @@ function hybrid_results_dir_for_tmax(tmax)
     return joinpath(HYBRID_RESULTS_DIR, pasta)
 end
 
+function plot_busca_exaustiva_derivada_run_problems(;
+    X0 = fill(0.09, 2),
+    tins = 5.0,
+    penalty_weight = 1.0e6,
+    fun::Function = sv_fork_assimilation,
+    alpha_min = 0.0,
+    alpha_max = 1.0,
+    n_points = 200,
+    fmax = 10000.0,
+    sentido = :descida,
+    output = nothing,
+    data_output = nothing,
+)
+    X_ref = copy(float.(X0))
+    dim = length(X_ref)
+    tbeg = 0.0
+    tend = tins isa Number ? Float64(tins) : Float64(last(tins))
+    estado_prev = nothing
+    lower = zeros(dim)
+    upper = fill(0.5, dim)
+
+    function f_base(x)
+        resultado = fun(x, tbeg, tend, estado_prev)
+        sse = dot(resultado.erro, resultado.erro)
+        return isfinite(sse) ? sse : 1.0e26
+    end
+
+    f_penalizada(x) = f_base(x) + penalidade_caixa_externa(
+        x,
+        lower,
+        upper;
+        rho = penalty_weight,
+    )
+
+    cfg = ForwardDiff.GradientConfig(
+        f_penalizada,
+        X_ref,
+        ForwardDiff.Chunk{dim}(),
+    )
+
+    function g!(G, x)
+        ForwardDiff.gradient!(G, f_penalizada, x, cfg)
+        return G
+    end
+
+    arquivo = output === nothing ?
+        arquivo_em_results("busca_exaustiva_derivada_$(label_tmax(tend))_$(dim).png") :
+        output
+    arquivo_dados = data_output === nothing ?
+        arquivo_em_results("busca_exaustiva_derivada_$(label_tmax(tend))_$(dim).csv") :
+        data_output
+
+    return plot_busca_exaustiva_derivada(
+        f_penalizada,
+        g!,
+        X_ref;
+        alpha_min = alpha_min,
+        alpha_max = alpha_max,
+        n_points = n_points,
+        fmax = fmax,
+        sentido = sentido,
+        output = arquivo,
+        data_output = arquivo_dados,
+        titulo = "Busca exaustiva na derivada | tend = $tend | dim = $dim",
+    )
+end
+
 
 function run_problems(; 
     X0 = fill(0.09, 2),
@@ -99,7 +166,7 @@ function run_problems(;
     end
 
     metodos = lowercase(String(method)) == "all" ?
-        [:bfgs, :spg, :bobyqa, :mads] :
+        [:bfgs, :trust_region, :spg, :bobyqa, :mads] :
         [normaliza_metodo(method)]
 
     cfg_bfgs = ForwardDiff.GradientConfig(
@@ -138,7 +205,7 @@ function run_problems(;
             write(file, "lower = $(collect(lower_bfgs))\n")
             write(file, "upper = $(collect(upper_bfgs))\n")
             write(file, "rmsd_tol = $rmsd_tol\n")
-            if metodo == :bfgs
+            if metodo in (:bfgs, :trust_region)
                 write(file, "grad_tol = $grad_tol\n")
             elseif metodo == :spg
                 write(file, "grad_tol = $grad_tol\n")
@@ -231,8 +298,10 @@ function run_problems(;
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
                 g_obj!,
+                lower_bfgs,
+                upper_bfgs,
                 copy(X0),
-                BFGS(),
+                Fminbox(BFGS(linesearch = QuadraticBacktracking())),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
@@ -255,11 +324,41 @@ function run_problems(;
                 maxfun = f_calls_limit,
                 g_abstol = grad_tol,
                 x_abstol = bfgs_x_abstol,
+                linesearch = "QuadraticBacktracking",
             )
             status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
             resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = QuadraticBacktracking\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
+
+        elseif metodo == :trust_region
+            println("Rodando Trust Region BFGS com dimensão = ", dim)
+            avaliacoes_trust = Ref(0)
+
+            function f_trust_region(x)
+                f = f_penalizada_bfgs(x)
+                registra_avaliacao!(arquivo, avaliacoes_trust[], f, x)
+                avaliacoes_trust[] += 1
+                return f
+            end
+
+            inicio_metodo = time()
+            resultado_trust = trust_region_bfgs(
+                f_trust_region,
+                g_obj!,
+                copy(X0);
+                Δ0 = 0.1,
+                Δmax = maximum(upper_bfgs .- lower_bfgs),
+                maxiter = iterations,
+                gtol = grad_tol,
+            )
+            tempo_trust = time() - inicio_metodo
+            X_trust = copy(resultado_trust.x)
+            fval_trust = resultado_trust.f
+            avaliacoes_trust_final = avaliacoes_trust[]
+            resultado = monta_resultado(:trust_region, resultado_trust, X_trust, fval_trust, arquivo; status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, tempo_s = tempo_trust)
+            salva_resumo!(arquivo; f_final = fval_trust, RMSD = resultado.RMSD, x_final = X_trust, status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, tempo_s = tempo_trust, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nDelta0 = $rhobeg\nDelta_final = $(resultado_trust.Δ)\ngnorm = $(resultado_trust.gnorm)\n")
+            resultados[:trust_region] = resultado
 
         elseif metodo == :spg
             println("Rodando SPGBox com dimensão = ", dim)
@@ -297,7 +396,10 @@ function run_problems(;
             println("Criterio de parada do SPGBox: ", criterio_parada_spg(resultado_spg.ierr))
             println("SPGBox finalizou com nit = ", resultado_spg.nit, ", nfeval = ", resultado_spg.nfeval, ", gnorm = ", resultado_spg.gnorm)
             resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)
-            salva_resumo!(arquivo; f_final = fval_spg, RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg, extra = "iteracoes = $(resultado_spg.nit)\ngrad_tol = $grad_tol\ncriterio_parada = $(criterio_parada_spg(resultado_spg.ierr))\ngnorm = $(resultado_spg.gnorm)\n")
+            salva_resumo!(arquivo; f_final = fval_spg,
+                RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr,
+                avaliacoes = avaliacoes_spg, tempo_s = tempo_spg,
+                extra = "iteracoes = $(resultado_spg.nit)\ngrad_tol = $grad_tol\ncriterio_parada = $(criterio_parada_spg(resultado_spg.ierr))\ngnorm = $(resultado_spg.gnorm)\n")
             resultados[:spg] = resultado
 
         elseif metodo == :bobyqa
@@ -350,7 +452,6 @@ function run_problems(;
             opcoes = NOMAD.NomadOptions(
                 display_degree = 0,
                 max_bb_eval = f_calls_limit,
-                eval_use_cache = false,
             )
 
             problema = NOMAD.NomadProblem(
@@ -385,7 +486,7 @@ function run_problems(;
             resultados[:mads] = resultado
 
         else
-            error("Metodo desconhecido: $metodo. Use bfgs, spg, bobyqa, mads ou all.")
+            error("Metodo desconhecido: $metodo. Use bfgs, trust_region, spg, bobyqa, mads ou all.")
         end
     end
 

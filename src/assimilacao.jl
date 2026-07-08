@@ -1,4 +1,5 @@
 using LinearAlgebra
+using DelimitedFiles
 using Optim
 using ForwardDiff
 
@@ -708,7 +709,32 @@ function assimilation_rmsd_heatmap(;
     rmsd_max = 3.0,
     fun::Function = sv_fork_new,
     output = arquivo_em_results("assimilacao_heatmap_tend_31.pdf"),
+    matrix_output = arquivo_em_results("assimilacao_heatmap_tend_31.csv"),
+    reuse_existing = true,
 )
+    if reuse_existing && matrix_output !== nothing && isfile(matrix_output)
+        heat = le_assimilation_heatmap_matrix(matrix_output)
+        p = plot_assimilation_heatmap_from_data(
+            heat.n1,
+            heat.n2,
+            heat.RMSD;
+            rmsd_max,
+            output,
+        )
+        println("Matriz RMSD da assimilacao reutilizada de: ", matrix_output)
+        println("Heatmap de assimilacao salvo em: ", output)
+
+        return (;
+            plot = p,
+            n1 = heat.n1,
+            n2 = heat.n2,
+            RMSD = heat.RMSD,
+            output,
+            matrix_output,
+            reused = true,
+        )
+    end
+
     grid = collect(range(lower, upper, length = grid_points))
     Z = Matrix{Float64}(undef, grid_points, grid_points)
 
@@ -734,36 +760,370 @@ function assimilation_rmsd_heatmap(;
         end
     end
 
+    p = plot_assimilation_heatmap_from_data(
+        grid,
+        grid,
+        Z;
+        rmsd_max,
+        output,
+    )
+
+    if matrix_output !== nothing
+        mkpath(dirname(matrix_output))
+
+        table = Matrix{Any}(undef, grid_points + 1, grid_points + 1)
+        table[1, 1] = "n2/n1"
+        table[1, 2:end] .= grid
+        table[2:end, 1] .= grid
+        table[2:end, 2:end] .= Z
+
+        writedlm(matrix_output, table, ',')
+        println("Matriz RMSD da assimilacao salva em: ", matrix_output)
+    end
+
+    println("Heatmap de assimilacao salvo em: ", output)
+
+    return (; plot = p, n1 = grid, n2 = grid, RMSD = Z, output, matrix_output, reused = false)
+end
+
+function le_assimilation_heatmap_matrix(matrix_output)
+    dados = readdlm(matrix_output, ',', Any)
+    n1 = [Float64(x) for x in dados[1, 2:end]]
+    n2 = [Float64(x) for x in dados[2:end, 1]]
+    Z = Matrix{Float64}(undef, length(n2), length(n1))
+
+    for j in eachindex(n2), i in eachindex(n1)
+        Z[j, i] = Float64(dados[j + 1, i + 1])
+    end
+
+    return (; n1, n2, RMSD = Z, matrix_output)
+end
+
+function plot_assimilation_heatmap_from_data(
+    n1,
+    n2,
+    Z;
+    rmsd_max = 3.0,
+    output = nothing,
+)
+    pgfplotsx()
+
     p = heatmap(
-        grid,
-        grid,
+        n1,
+        n2,
         Z,
         xlabel = "Manning 1",
         ylabel = "Manning 2",
         colorbar_title = "RMSD",
         clim = (0.0, rmsd_max),
         aspect_ratio = :equal,
-        xlims = (0.05, 0.30),
-        ylims = (0.05, 0.30),
+        xlims = (minimum(n1), maximum(n1)),
+        ylims = (minimum(n2), maximum(n2)),
         background_color = :white,
         background_color_inside = :white,
     )
 
     contour!(
         p,
-        grid,
-        grid,
+        n1,
+        n2,
         Z,
         linewidth = 1.2,
         color = :black,
         alpha = 0.45,
     )
 
+    if output !== nothing
+        mkpath(dirname(output))
+        savefig(p, output)
+    end
+
+    return p
+end
+
+function salva_pontos_aceitos_bfgs_default_assimilacao!(
+    arquivo,
+    pontos,
+    valores,
+    valores_penalizados,
+    gnorms;
+    x0,
+    tin,
+    tend,
+    lower,
+    upper,
+    penalty_weight,
+)
+    mkpath(dirname(arquivo))
+    open(arquivo, "w") do file
+        write(file, "Pontos aceitos no BFGS default para assimilacao\n")
+        write(file, "Metodo = BFGS() com penalidade externa de caixa\n")
+        write(file, "tin = $tin | tend = $tend\n")
+        write(file, "x0 = $(collect(x0))\n")
+        write(file, "lower = $lower | upper = $upper\n")
+        write(file, "penalty_weight = $penalty_weight\n")
+        write(file, "\niter\tf\tf_penalizada\tgnorm\tx1\tx2\n")
+
+        for k in eachindex(pontos)
+            x = pontos[k]
+            write(file, "$(k - 1)\t$(valores[k])\t$(valores_penalizados[k])\t$(gnorms[k])\t$(x[1])\t$(x[2])\n")
+        end
+    end
+
+    return arquivo
+end
+
+function pontos_aceitos_bfgs_default_assimilacao(;
+    X0 = [0.09, 0.09],
+    tin = 0.0,
+    tend = 31.0,
+    lower = 0.0,
+    upper = 0.5,
+    penalty_weight = 1.0e6,
+    iterations = 100,
+    f_calls_limit = 200,
+    g_calls_limit = 100,
+    grad_tol = 1.0e-3,
+    fun::Function = sv_fork_new,
+    accepted_output = arquivo_em_results("bfgs_default_aceitos_tend_31_2.txt"),
+)
+    X_ref = copy(float.(X0))
+    if length(X_ref) != 2
+        error("Esta rotina de plot usa o heatmap 2D; X0 deve ter dimensao 2.")
+    end
+
+    lower_vec = fill(Float64(lower), 2)
+    upper_vec = fill(Float64(upper), 2)
+    x_avaliados = Vector{Vector{Float64}}()
+    f_avaliados = Float64[]
+    x_gradientes = Vector{Vector{Float64}}()
+    gnorm_gradientes = Float64[]
+    pontos_aceitos = Vector{Vector{Float64}}()
+    valores_aceitos = Float64[]
+    valores_penalizados_aceitos = Float64[]
+    gnorms_aceitos = Float64[]
+
+    function f_base(x)
+        resultado = fun(x, tin, tend, nothing)
+        erro = resultado.erro
+        sse = dot(erro, erro)
+        return isfinite(sse) ? sse : 1.0e27
+    end
+
+    function f_obj(x)
+        valor = f_base(x)
+        if !(eltype(x) <: ForwardDiff.Dual)
+            push!(x_avaliados, copy(float.(x)))
+            push!(f_avaliados, Float64(valor))
+        end
+        return valor
+    end
+
+    f_penalizada(x) = f_obj(x) + penalidade_caixa_externa(
+        x,
+        lower_vec,
+        upper_vec;
+        rho = penalty_weight,
+    )
+
+    cfg = ForwardDiff.GradientConfig(f_penalizada, X_ref, ForwardDiff.Chunk{2}())
+
+    function g_obj!(G, x)
+        ForwardDiff.gradient!(G, f_penalizada, x, cfg)
+        push!(x_gradientes, copy(float.(x)))
+        push!(gnorm_gradientes, norm(G))
+        return G
+    end
+
+    function valor_mais_recente(x_atual, pontos, valores, fallback)
+        for i in length(pontos):-1:1
+            if norm(x_atual - pontos[i]) <= 1.0e-10
+                return valores[i]
+            end
+        end
+        return Float64(fallback)
+    end
+
+    function salva_ponto_aceito!(estado)
+        x_atual = copy(float.(estado.x))
+        f_atual = valor_mais_recente(x_atual, x_avaliados, f_avaliados, estado.f_x)
+        gnorm_atual = valor_mais_recente(x_atual, x_gradientes, gnorm_gradientes, norm(estado.g_x))
+
+        push!(pontos_aceitos, x_atual)
+        push!(valores_aceitos, f_atual)
+        push!(valores_penalizados_aceitos, Float64(estado.f_x))
+        push!(gnorms_aceitos, gnorm_atual)
+        return false
+    end
+
+    resultado = Optim.optimize(
+        f_penalizada,
+        g_obj!,
+        X_ref,
+        BFGS(),
+        Optim.Options(
+            iterations = iterations,
+            f_calls_limit = f_calls_limit,
+            g_calls_limit = g_calls_limit,
+            g_abstol = grad_tol,
+            callback = salva_ponto_aceito!,
+        ),
+    )
+
+    if isempty(pontos_aceitos)
+        x_final = copy(float.(Optim.minimizer(resultado)))
+        f_final_penalizada = Float64(Optim.minimum(resultado))
+        f_final = valor_mais_recente(x_final, x_avaliados, f_avaliados, f_final_penalizada)
+        push!(pontos_aceitos, x_final)
+        push!(valores_aceitos, f_final)
+        push!(valores_penalizados_aceitos, f_final_penalizada)
+        push!(gnorms_aceitos, NaN)
+    end
+
+    salva_pontos_aceitos_bfgs_default_assimilacao!(
+        accepted_output,
+        pontos_aceitos,
+        valores_aceitos,
+        valores_penalizados_aceitos,
+        gnorms_aceitos;
+        x0 = X_ref,
+        tin,
+        tend,
+        lower,
+        upper,
+        penalty_weight,
+    )
+
+    return (;
+        resultado,
+        pontos = pontos_aceitos,
+        valores = valores_aceitos,
+        valores_penalizados = valores_penalizados_aceitos,
+        gnorms = gnorms_aceitos,
+        accepted_output,
+    )
+end
+
+function plot_heatmap_bfgs_default_assimilacao(;
+    X0 = [0.09, 0.09],
+    tin = 0.0,
+    tend = 31.0,
+    grid_points = 100,
+    lower_grid = 0.05,
+    upper_grid = 0.3,
+    rmsd_max = 3.0,
+    bfgs_lower = 0.0,
+    bfgs_upper = 0.5,
+    penalty_weight = 1.0e6,
+    iterations = 100,
+    f_calls_limit = 200,
+    g_calls_limit = 100,
+    grad_tol = 1.0e-3,
+    fun::Function = sv_fork_new,
+    matrix_output = arquivo_em_results("assimilacao_heatmap_tend_31.csv"),
+    output = arquivo_em_results("assimilacao_heatmap_bfgs_default_tend_31_2.pdf"),
+    accepted_output = arquivo_em_results("bfgs_default_aceitos_tend_31_2.txt"),
+)
+    heatmap_base_output = arquivo_em_results("assimilacao_heatmap_base_tend_$(label_tmax(tend)).pdf")
+    heat = if isfile(matrix_output)
+        le_assimilation_heatmap_matrix(matrix_output)
+    else
+        assimilation_rmsd_heatmap(;
+            tin,
+            tend,
+            grid_points,
+            lower = lower_grid,
+            upper = upper_grid,
+            rmsd_max,
+            fun,
+            output = heatmap_base_output,
+            matrix_output,
+        )
+    end
+
+    bfgs = pontos_aceitos_bfgs_default_assimilacao(;
+        X0,
+        tin,
+        tend,
+        lower = bfgs_lower,
+        upper = bfgs_upper,
+        penalty_weight,
+        iterations,
+        f_calls_limit,
+        g_calls_limit,
+        grad_tol,
+        fun,
+        accepted_output,
+    )
+
+    xs = [p[1] for p in bfgs.pontos]
+    ys = [p[2] for p in bfgs.pontos]
+
+    pgfplotsx()
+
+    p = heatmap(
+        heat.n1,
+        heat.n2,
+        heat.RMSD,
+        xlabel = "Manning 1",
+        ylabel = "Manning 2",
+        colorbar_title = "RMSD",
+        clim = (0.0, rmsd_max),
+        aspect_ratio = :equal,
+        xlims = (lower_grid, upper_grid),
+        ylims = (lower_grid, upper_grid),
+        background_color = :white,
+        background_color_inside = :white,
+        label = "",
+    )
+
+    contour!(
+        p,
+        heat.n1,
+        heat.n2,
+        heat.RMSD,
+        linewidth = 1.2,
+        color = :black,
+        alpha = 0.45,
+        label = "",
+    )
+
+    plot!(
+        p,
+        xs,
+        ys,
+        marker = (:circle, 4),
+        linewidth = 2,
+        color = :red,
+        label = "BFGS default",
+    )
+
+    scatter!(
+        p,
+        xs[1:1],
+        ys[1:1],
+        marker = (:circle, 6),
+        color = :white,
+        markerstrokecolor = :red,
+        markerstrokewidth = 2,
+        label = "inicio",
+    )
+
+    scatter!(
+        p,
+        xs[end:end],
+        ys[end:end],
+        marker = (:star5, 8),
+        color = :red,
+        label = "fim",
+    )
+
     mkpath(dirname(output))
     savefig(p, output)
-    println("Heatmap de assimilacao salvo em: ", output)
+    println("Heatmap com pontos aceitos do BFGS default salvo em: ", output)
+    println("Pontos aceitos do BFGS default salvos em: ", accepted_output)
 
-    return (; plot = p, n1 = grid, n2 = grid, RMSD = Z, output)
+    return (; plot = p, heatmap = heat, bfgs, output, accepted_output)
 end
 
 
