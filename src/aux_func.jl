@@ -471,7 +471,7 @@ function trust_region_bfgs(
     f,
     g!,
     x0;
-    Δ0 = 0.1,
+    Δ0 = 1.0,
     Δmax = 1.0,
     η1 = 0.25,
     η2 = 0.75,
@@ -567,6 +567,175 @@ function trust_region_bfgs(
         end
 
         history[end] = merge(history[end], (; accepted, ρ))
+    end
+end
+
+function trust_region_bfgs(
+    f,
+    g!,
+    x0;
+    delta0 = 0.25,
+    delta_max = 1.0,
+    eta1 = 0.10,
+    eta2 = 0.90,
+    gamma_dec = 0.5,
+    gamma_inc = 2.0,
+    Δ0 = nothing,
+    Δmax = nothing,
+    η1 = nothing,
+    η2 = nothing,
+    γdec = nothing,
+    γinc = nothing,
+    maxiter = 100,
+    gtol = 1.0e-6,
+    regularization = 1.0e-8,
+    lower = nothing,
+    upper = nothing,
+    invalid_f_threshold = 1000.0,
+    scale_initial_hessian = true,
+    verbose = false,
+)
+    x = copy(float.(x0))
+    n = length(x)
+    delta0 = Δ0 === nothing ? delta0 : Float64(Δ0)
+    delta_max = Δmax === nothing ? delta_max : Float64(Δmax)
+    eta1 = η1 === nothing ? eta1 : Float64(η1)
+    eta2 = η2 === nothing ? eta2 : Float64(η2)
+    gamma_dec = γdec === nothing ? gamma_dec : Float64(γdec)
+    gamma_inc = γinc === nothing ? gamma_inc : Float64(γinc)
+
+    if lower === nothing && upper === nothing
+        lower_vec = zeros(n)
+        upper_vec = fill(0.5, n)
+    else
+        lower_vec = lower === nothing ? fill(-Inf, n) : Float64.(collect(lower))
+        upper_vec = upper === nothing ? fill(Inf, n) : Float64.(collect(upper))
+    end
+
+    if length(lower_vec) != n || length(upper_vec) != n
+        error("lower e upper devem ter o mesmo tamanho de x0.")
+    end
+
+    x .= clamp.(x, lower_vec, upper_vec)
+
+    B = Matrix{Float64}(I, n, n)
+    delta = min(Float64(delta0), Float64(delta_max))
+    f_x = Float64(f(x))
+    g = similar(x)
+    g!(g, x)
+
+    if scale_initial_hessian
+        scale = max(norm(g), 1.0)
+        if isfinite(scale) && scale > 0
+            B .*= scale
+        end
+    end
+
+    history = Vector{NamedTuple}()
+
+    for k in 0:maxiter
+        gnorm = norm(g)
+        push!(history, (;
+            iter = k,
+            f = f_x,
+            gnorm,
+            delta,
+            x = copy(x),
+            accepted = k == 0 ? true : missing,
+            rho = k == 0 ? missing : missing,
+        ))
+
+        if verbose
+            println("trust_region_bfgs iter = $k | f = $f_x | ||g|| = $gnorm | delta = $delta")
+        end
+
+        if gnorm <= gtol || k == maxiter
+            status = gnorm <= gtol ? "gtol" : "maxiter"
+            return (;
+                x,
+                f = f_x,
+                g = copy(g),
+                gnorm,
+                B,
+                delta,
+                Δ = delta,
+                iterations = k,
+                status,
+                history,
+            )
+        end
+
+        p = passo_dogleg_bfgs_trust_region(g, B, delta; regularization = regularization)
+        x_trial = clamp.(x .+ p, lower_vec, upper_vec)
+        p = x_trial - x
+        pnorm = norm(p)
+
+        if pnorm <= eps(Float64) * max(1.0, norm(x))
+            delta = max(gamma_dec * delta, eps(Float64))
+            history[end] = merge(history[end], (; accepted = false, rho = -Inf, pnorm, invalid_trial = false))
+            continue
+        end
+
+        predicted_reduction = -(dot(g, p) + 0.5 * dot(p, B * p))
+
+        if predicted_reduction <= 0 || !isfinite(predicted_reduction)
+            p = passo_cauchy_trust_region(g, B, delta)
+            x_trial = clamp.(x .+ p, lower_vec, upper_vec)
+            p = x_trial - x
+            pnorm = norm(p)
+
+            if pnorm <= eps(Float64) * max(1.0, norm(x))
+                delta = max(gamma_dec * delta, eps(Float64))
+                history[end] = merge(history[end], (; accepted = false, rho = -Inf, pnorm, invalid_trial = false))
+                continue
+            end
+
+            predicted_reduction = -(dot(g, p) + 0.5 * dot(p, B * p))
+        end
+
+        f_trial = Float64(f(x_trial))
+        invalid_trial = !isfinite(f_trial) || isnan(f_trial) || f_trial > invalid_f_threshold
+
+        if invalid_trial
+            delta = max(gamma_dec * pnorm, eps(Float64))
+            history[end] = merge(history[end], (; accepted = false, rho = -Inf, pnorm, invalid_trial, f_trial))
+            continue
+        end
+
+        actual_reduction = f_x - f_trial
+        rho = predicted_reduction > 0 ? actual_reduction / predicted_reduction : -Inf
+        accepted = isfinite(f_trial) && rho > eta1
+
+        if rho < eta1
+            delta = max(gamma_dec * pnorm, eps(Float64))
+        elseif rho > eta2 && pnorm >= 0.8 * delta
+            delta = min(gamma_inc * delta, delta_max)
+        end
+
+        if accepted
+            g_trial = similar(g)
+            g!(g_trial, x_trial)
+
+            s = x_trial - x
+            y = g_trial - g
+            ys = dot(y, s)
+
+            if ys > 1.0e-12 * norm(y) * norm(s)
+                Bs = B * s
+                sBs = dot(s, Bs)
+                if sBs > 0
+                    B = B - (Bs * Bs') / sBs + (y * y') / ys
+                else
+                    B = Matrix{Float64}(I, n, n)
+                end
+            end
+
+            x = x_trial
+            f_x = f_trial
+            g .= g_trial
+        end
+
+        history[end] = merge(history[end], (; accepted, rho, pnorm, invalid_trial = false, f_trial))
     end
 end
 
