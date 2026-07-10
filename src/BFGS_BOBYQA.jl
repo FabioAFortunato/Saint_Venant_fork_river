@@ -236,7 +236,7 @@ function run_problems(;
         end
     end
 
-    function monta_resultado(metodo, resultado, x_final, f_final, arquivo; status = "", avaliacoes = missing, tempo_s = missing)
+    function monta_resultado(metodo, resultado, x_final, f_final, arquivo; status = "", avaliacoes = missing, iteracoes = missing, tempo_s = missing)
         estado_final = fun(x_final, tbeg, tend, estado_prev)
         RMSD_final = norm(estado_final.erro / sqrt(size(estado_final.erro, 1)))
         G_final = similar(x_final)
@@ -245,6 +245,7 @@ function run_problems(;
         println("fval $(uppercase(String(metodo))) = ", f_final)
         println("RMSD após $(uppercase(String(metodo))) = ", RMSD_final)
         println("Avaliações $(uppercase(String(metodo))) = ", avaliacoes)
+        println("Iterações $(uppercase(String(metodo))) = ", iteracoes)
         println("Norma do gradiente final $(uppercase(String(metodo))) = ", gnorm_final)
         println("Tempo $(uppercase(String(metodo))) = ", round(tempo_s, digits=6), " s")
         return (;
@@ -260,6 +261,7 @@ function run_problems(;
             result = resultado,
             status,
             avaliacoes,
+            iteracoes,
             tempo_s,
             arquivo,
         )
@@ -299,6 +301,7 @@ function run_problems(;
             tempo_bfgs = time() - inicio_metodo
             X_bfgs = Optim.minimizer(resultado_bfgs)
             fval_bfgs = Optim.minimum(resultado_bfgs)
+            iteracoes_bfgs = Optim.iterations(resultado_bfgs)
             G_bfgs = similar(X_bfgs)
             g_obj!(G_bfgs, X_bfgs)
             println(norm(G_bfgs))
@@ -306,6 +309,7 @@ function run_problems(;
                 f = fval_bfgs,
                 x = copy(X_bfgs),
                 avaliacoes = avaliacoes_bfgs[],
+                iteracoes = iteracoes_bfgs,
                 maxiter = iterations,
                 maxfun = f_calls_limit,
                 g_abstol = grad_tol,
@@ -313,8 +317,8 @@ function run_problems(;
                 linesearch = "QuadraticBacktracking",
             )
             status_bfgs = Optim.converged(resultado_bfgs) ? "convergido" : "finalizado"
-            resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs)
-            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = QuadraticBacktracking\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
+            resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], iteracoes = iteracoes_bfgs, tempo_s = tempo_bfgs)
+            salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "iteracoes = $iteracoes_bfgs\nmaxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = QuadraticBacktracking\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
 
         elseif metodo == :trust_region
@@ -342,8 +346,9 @@ function run_problems(;
             X_trust = copy(resultado_trust.x)
             fval_trust = resultado_trust.f
             avaliacoes_trust_final = avaliacoes_trust[]
-            resultado = monta_resultado(:trust_region, resultado_trust, X_trust, fval_trust, arquivo; status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, tempo_s = tempo_trust)
-            salva_resumo!(arquivo; f_final = fval_trust, RMSD = resultado.RMSD, x_final = X_trust, status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, tempo_s = tempo_trust, extra = "maxiter = $iterations\ngrad_tol = $grad_tol\nDelta0 = $rhobeg\nDelta_final = $(resultado_trust.Δ)\ngnorm = $(resultado_trust.gnorm)\n")
+            iteracoes_trust = resultado_trust.iterations
+            resultado = monta_resultado(:trust_region, resultado_trust, X_trust, fval_trust, arquivo; status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, iteracoes = iteracoes_trust, tempo_s = tempo_trust)
+            salva_resumo!(arquivo; f_final = fval_trust, RMSD = resultado.RMSD, x_final = X_trust, status = resultado_trust.status, avaliacoes = avaliacoes_trust_final, tempo_s = tempo_trust, extra = "iteracoes = $iteracoes_trust\nmaxiter = $iterations\ngrad_tol = $grad_tol\nDelta0 = $rhobeg\nDelta_final = $(resultado_trust.Δ)\ngnorm = $(resultado_trust.gnorm)\n")
             resultados[:trust_region] = resultado
 
         elseif metodo == :spg
@@ -381,7 +386,7 @@ function run_problems(;
             avaliacoes_spg = resultado_spg.nfeval
             println("Criterio de parada do SPGBox: ", criterio_parada_spg(resultado_spg.ierr))
             println("SPGBox finalizou com nit = ", resultado_spg.nit, ", nfeval = ", resultado_spg.nfeval, ", gnorm = ", resultado_spg.gnorm)
-            resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, tempo_s = tempo_spg)
+            resultado = monta_resultado(:spg, resultado_spg, X_spg, fval_spg, arquivo; status = resultado_spg.ierr, avaliacoes = avaliacoes_spg, iteracoes = resultado_spg.nit, tempo_s = tempo_spg)
             salva_resumo!(arquivo; f_final = fval_spg,
                 RMSD = resultado.RMSD, x_final = X_spg, status = resultado_spg.ierr,
                 avaliacoes = avaliacoes_spg, tempo_s = tempo_spg,

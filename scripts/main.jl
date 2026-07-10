@@ -1,6 +1,7 @@
 using DataFrames
 using Printf
 using GLM
+using LaTeXStrings
 n_man = 101
 
 include("../src/obj_func.jl")
@@ -215,6 +216,345 @@ function teste_todos(; t = 5.0, x = [0.1; 0.06])
     bobyqa_two_dim_problem(tmax = t, x0 = x)
     mads_full_dim_problem(tmax = t, x0 = collect(range(x[1], x[2], length = 101)))
     mads_two_dim_problem(tmax = t, x0 = x)
+end
+
+function plot_busca_exaustiva_derivada_31_3_latex(;
+    data_output = "results/busca_exaustiva_derivada_31_3.csv",
+    output = "results/busca_exaustiva_derivada_31_3_latex.pdf",
+    output_RMSD = "results/busca_exaustiva_derivada_31_3_RMSD_latex.pdf",
+    )
+    dados = le_busca_exaustiva_derivada(data_output)
+    fmax = maximum(dados.valores_plot)
+    rmsd_max = maximum(dados.valores_plot_RMSD)
+
+    p = Plots.plot(
+        dados.alphas,
+        dados.valores_plot;
+        xlabel = L"\alpha",
+        ylabel = L"f(x + \alpha d)",
+        label = "limited function",
+        linewidth = 2,
+        legend = :topleft,
+        ylims = (0, fmax),
+    )
+    Plots.hline!(p, [fmax]; label = "max. value = $fmax", linestyle = :dash)
+
+    p_RMSD = Plots.plot(
+        dados.alphas,
+        dados.valores_plot_RMSD;
+        xlabel = L"\alpha",
+        ylabel = L"\mathrm{RMSD}(x + \alpha d)",
+        label = "limited RMSD",
+        linewidth = 2,
+        legend = :topleft,
+        ylims = (0, rmsd_max),
+    )
+    Plots.hline!(p_RMSD, [rmsd_max]; label = "max. value = $(trunc(rmsd_max, digits=1))", linestyle = :dash)
+
+
+    mkpath(dirname(output))
+    Plots.savefig(p, output)
+
+    mkpath(dirname(output_RMSD))
+    Plots.savefig(p_RMSD, output_RMSD)
+
+    return (; plot = p, plot_RMSD = p_RMSD, output, output_RMSD, data = dados)
+end
+
+function plot_assimilacao_heatmap_tend_31_latex(;
+    matrix_output = "results/assimilacao_heatmap_tend_31.csv",
+    output = "results/assimilacao_heatmap_tend_31_latex.pdf",
+    rmsd_max = 2.0,
+    tamanho = (700, 600),
+)
+    Plots.gr()
+    heat = le_assimilation_heatmap_matrix(matrix_output)
+    min_idx = argmin(heat.RMSD)
+    n1_min = heat.n1[min_idx[2]]
+    n2_min = heat.n2[min_idx[1]]
+    rmsd_min = heat.RMSD[min_idx]
+    Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
+
+    p = Plots.heatmap(
+        heat.n1,
+        heat.n2,
+        Z_plot;
+        xlabel = "Manning coefficient x1",
+        ylabel = "Manning coefficient x2",
+        colorbar_title = L"\mathrm{RMSD}",
+        clim = (0.0, rmsd_max),
+        aspect_ratio = :equal,
+        xlims = (minimum(heat.n1), maximum(heat.n1)),
+        ylims = (minimum(heat.n2), maximum(heat.n2)),
+        color = :viridis,
+        background_color = :white,
+        background_color_inside = :gold,
+        size = tamanho,
+        legend = :topleft,
+    )
+
+    Plots.scatter!(
+        p,
+        [NaN],
+        [NaN];
+        markershape = :rect,
+        markersize = 14,
+        markercolor = :gold,
+        markerstrokecolor = :black,
+        label = "Yellow region = NaN",
+    )
+
+    Plots.contour!(
+        p,
+        heat.n1,
+        heat.n2,
+        heat.RMSD;
+        linewidth = 1.2,
+        color = :black,
+        labels = false,
+        levels = 8,
+    )
+
+    Plots.scatter!(
+        p,
+        [n1_min],
+        [n2_min];
+        marker = :star5,
+        markersize = 10,
+        markercolor = :white,
+        markerstrokecolor = :black,
+        markerstrokewidth = 1.5,
+        label = "($(round(n1_min, digits=4)), $(round(n2_min, digits=4))), RMSD = $(round(rmsd_min, digits=4))",
+    )
+
+    mkpath(dirname(output))
+    Plots.savefig(p, output)
+
+    return (; plot = p, output, data = heat, minimo = (n1 = n1_min, n2 = n2_min, RMSD = rmsd_min))
+end
+
+function le_pontos_aceitos_por_aumento_proximo_bfgs(txt_output = "results/BFGS_31_2.txt")
+    linhas = readlines(txt_output)
+    inicio = findfirst(linha -> startswith(linha, "iter"), linhas)
+    if inicio === nothing
+        error("Arquivo invalido: nao encontrei o cabecalho com iter/f/x.")
+    end
+
+    iteracoes = Int[]
+    valores = Float64[]
+    pontos = Vector{Vector{Float64}}()
+
+    for linha in linhas[(inicio + 1):end]
+        isempty(strip(linha)) && break
+        startswith(linha, "Resumo") && break
+
+        campos = split(strip(linha))
+        length(campos) < 4 && continue
+
+        push!(iteracoes, parse(Int, campos[1]))
+        push!(valores, parse(Float64, campos[2]))
+        push!(pontos, parse.(Float64, campos[3:end]))
+    end
+
+    indices_aceitos = [i for i in 1:(length(valores) - 1) if valores[i + 1] > valores[i]]
+    pontos_aceitos = pontos[indices_aceitos]
+    valores_aceitos = valores[indices_aceitos]
+    iteracoes_aceitas = iteracoes[indices_aceitos]
+    rmsd_resumo = missing
+
+    for linha in linhas
+        if startswith(strip(linha), "RMSD =")
+            rmsd_resumo = parse(Float64, strip(split(linha, "=")[2]))
+        end
+    end
+
+    return (;
+        txt_output,
+        iteracoes,
+        valores,
+        pontos,
+        indices_aceitos,
+        iteracoes_aceitas,
+        valores_aceitos,
+        pontos_aceitos,
+        rmsd_resumo,
+    )
+end
+
+function plot_assimilacao_heatmap_tend_31_latex_com_bfgs_aceitos(;
+    bfgs_output = "results/BFGS_31_2.txt",
+    output = "results/assimilacao_heatmap_tend_31_latex_bfgs_aceitos.pdf",
+    kwargs...,
+)
+    base = plot_assimilacao_heatmap_tend_31_latex(; output, kwargs...)
+    aceitos = le_pontos_aceitos_por_aumento_proximo_bfgs(bfgs_output)
+
+    Plots.contour!(
+        base.plot,
+        base.data.n1,
+        base.data.n2,
+        base.data.RMSD;
+        linewidth = 1.2,
+        color = :black,
+        labels = false,
+        levels = 8,
+    )
+
+    if isempty(aceitos.pontos_aceitos)
+        @warn "Nenhum ponto aceito inferido por f[i+1] > f[i]."
+        return merge(base, (; bfgs = aceitos))
+    end
+
+    xs = [p[1] for p in aceitos.pontos_aceitos]
+    ys = [p[2] for p in aceitos.pontos_aceitos]
+    rmsd_bfgs = aceitos.rmsd_resumo
+
+    if ismissing(rmsd_bfgs)
+        resultado_bfgs = sv_fork_assimilation([xs[end], ys[end]], 0.0, 31.0, nothing)
+        erro_bfgs = resultado_bfgs.erro
+        rmsd_bfgs = norm(erro_bfgs / sqrt(length(erro_bfgs)))
+    end
+
+    Plots.plot!(
+        base.plot,
+        xs,
+        ys;
+        color = :red,
+        linewidth = 2,
+        marker = :circle,
+        markersize = 4,
+        markercolor = :red,
+        markerstrokecolor = :white,
+        label = "BFGS accepted points",
+    )
+
+    Plots.scatter!(
+        base.plot,
+        [xs[1]],
+        [ys[1]];
+        marker = :diamond,
+        markersize = 7,
+        markercolor = :white,
+        markerstrokecolor = :red,
+        markerstrokewidth = 1.5,
+        label = "BFGS start",
+    )
+
+    Plots.scatter!(
+        base.plot,
+        [xs[end]],
+        [ys[end]];
+        marker = :star5,
+        markersize = 9,
+        markercolor = :red,
+        markerstrokecolor = :white,
+        markerstrokewidth = 1.5,
+        label = "BFGS RMSD = $(round(rmsd_bfgs, digits=4))",
+    )
+
+    mkpath(dirname(output))
+    Plots.savefig(base.plot, output)
+
+    return merge(base, (; output, bfgs = aceitos, pontos_bfgs = (x = xs, y = ys), rmsd_bfgs))
+end
+
+function plot_assimilacao_heatmap_tend_31_latex_com_todos_bfgs_aceitos(;
+    indices = 0:6,
+    bfgs_outputs = ["results/$(i)_BFGS_31_2.txt" for i in indices],
+    output = "results/assimilacao_heatmap_tend_31_latex_todos_bfgs_aceitos.pdf",
+    kwargs...,
+)
+    base = plot_assimilacao_heatmap_tend_31_latex(; output, kwargs...)
+
+    cores = [:red, :blue, :orange, :green, :purple, :brown]
+    marcadores = [:circle, :diamond, :utriangle, :rect, :hexagon, :star5]
+    rotulos_indices = collect(indices)
+    testes = []
+
+    for (j, bfgs_output) in enumerate(bfgs_outputs)
+        if !isfile(bfgs_output)
+            @warn "Arquivo de BFGS nao encontrado; ignorando." bfgs_output
+            continue
+        end
+
+        aceitos = le_pontos_aceitos_por_aumento_proximo_bfgs(bfgs_output)
+        if isempty(aceitos.pontos_aceitos)
+            @warn "Nenhum ponto aceito inferido por f[i+1] > f[i]; ignorando." bfgs_output
+            continue
+        end
+
+        xs = [p[1] for p in aceitos.pontos_aceitos]
+        ys = [p[2] for p in aceitos.pontos_aceitos]
+        rmsd_bfgs = aceitos.rmsd_resumo
+
+        if ismissing(rmsd_bfgs)
+            resultado_bfgs = sv_fork_assimilation([xs[end], ys[end]], 0.0, 31.0, nothing)
+            erro_bfgs = resultado_bfgs.erro
+            rmsd_bfgs = norm(erro_bfgs / sqrt(length(erro_bfgs)))
+        end
+
+        cor = cores[mod1(j, length(cores))]
+        marcador = marcadores[mod1(j, length(marcadores))]
+        indice_teste = j <= length(rotulos_indices) ? rotulos_indices[j] : j
+        rotulo = "BFGS $(indice_teste) | RMSD = $(round(rmsd_bfgs, digits=4))"
+
+        Plots.plot!(
+            base.plot,
+            xs,
+            ys;
+            color = cor,
+            linewidth = 2,
+            marker = marcador,
+            markersize = 4,
+            markercolor = cor,
+            markerstrokecolor = :white,
+            label = rotulo,
+        )
+
+        Plots.scatter!(
+            base.plot,
+            [xs[1]],
+            [ys[1]];
+            marker = :diamond,
+            markersize = 6,
+            markercolor = :white,
+            markerstrokecolor = cor,
+            markerstrokewidth = 1.5,
+            label = false,
+        )
+
+        Plots.scatter!(
+            base.plot,
+            [xs[end]],
+            [ys[end]];
+            marker = :star5,
+            markersize = 8,
+            markercolor = cor,
+            markerstrokecolor = :white,
+            markerstrokewidth = 1.5,
+            label = false,
+        )
+
+        push!(
+            testes,
+            (;
+                indice = indice_teste,
+                txt_output = bfgs_output,
+                bfgs = aceitos,
+                pontos_bfgs = (x = xs, y = ys),
+                rmsd_bfgs,
+            ),
+        )
+    end
+
+    if isempty(testes)
+        @warn "Nenhum teste de BFGS foi plotado."
+    end
+
+    mkpath(dirname(output))
+    Plots.savefig(base.plot, output)
+
+    return merge(base, (; output, testes_bfgs = testes))
 end
 
 

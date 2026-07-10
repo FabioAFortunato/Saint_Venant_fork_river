@@ -187,11 +187,11 @@ function sv_fork_new(
     # ------------------------------------------------------------
     # Parameters
     # ------------------------------------------------------------
-    local alfa = T(0.99)          # artificial diffusion; alfa = 1 means no smoothing
+    local alfa = T(0.95)          # artificial diffusion; alfa = 1 means no smoothing
     local ualfa = one(T) - alfa
     local xmax = 3256.0
     local xmin = -39.0
-    local dt = 1.0
+    local dt = 0.5
     local grav = 9.8
     local dx = (xmax - xmin)/(nx - 1)
 
@@ -1128,6 +1128,53 @@ function plot_heatmap_bfgs_default_assimilacao(;
 
     return (; plot = p, heatmap = heat, bfgs, output, accepted_output)
 end
+
+function plot_curvas_nivel_assimilacao_1d(;
+    tin = 0.0,
+    tend = 31.0,
+    grid_points = 50,
+    lower_grid = 0.05,
+    upper_grid = 0.3,
+    rmsd_max = 2.0,
+    fun::Function = sv_fork_new,
+    output = arquivo_em_results("assimilacao_1d_curvas_nivel_tend_31.pdf"),
+)
+    grid = collect(range(lower_grid, upper_grid, length = grid_points))
+
+    function rmsd_no_ponto(x)
+        resultado = fun(x, tin, tend, nothing)
+        erro = resultado.erro
+        rmsd = norm(erro / sqrt(length(erro)))
+        return isfinite(rmsd) ? min(Float64(rmsd), rmsd_max) : rmsd_max
+    end
+
+    RMSD = [rmsd_no_ponto([n]) for n in grid]
+
+    pgfplotsx()
+
+    p = plot(
+        grid,
+        RMSD,
+        xlabel = "Manning",
+        ylabel = "RMSD",
+        xlims = (lower_grid, upper_grid),
+        ylims = (0.0, rmsd_max),
+        linewidth = 2,
+        color = :blue,
+        label = "RMSD",
+        background_color = :white,
+        background_color_inside = :white,
+    )
+
+    mkpath(dirname(output))
+    savefig(p, output)
+    println("Curvas de nível 1D da assimilação salvas em: ", output)
+
+    return (; plot = p, grid, RMSD, output)
+end
+
+plot_heatmap_bfgs_default_assimilacao_1d(; kwargs...) =
+    plot_curvas_nivel_assimilacao_1d(; kwargs...)
 
 
 
