@@ -147,11 +147,13 @@ function run_problems(;
 
     function normaliza_metodo(metodo)
         metodo_sym = Symbol(lowercase(String(metodo)))
-        return metodo_sym in (:bfgs, :lbfgs, :lbfgsb) ? :bfgs : metodo_sym
+        return metodo_sym in (:bfgs, :lbfgs, :lbfgsb) ? :bfgs :
+               metodo_sym in (:bfgs_linesearch, :bfgs_custom, :custom_bfgs) ? :bfgs_linesearch :
+               metodo_sym
     end
 
     metodos = lowercase(String(method)) == "all" ?
-        [:bfgs, :trust_region, :spg, :bobyqa, :mads] :
+        [:bfgs, :bfgs_linesearch, :trust_region, :spg, :bobyqa, :mads] :
         [normaliza_metodo(method)]
 
     cfg_bfgs = ForwardDiff.GradientConfig(
@@ -190,7 +192,7 @@ function run_problems(;
             write(file, "lower = $(collect(lower_bfgs))\n")
             write(file, "upper = $(collect(upper_bfgs))\n")
             write(file, "rmsd_tol = $rmsd_tol\n")
-            if metodo in (:bfgs, :trust_region)
+            if metodo in (:bfgs, :bfgs_linesearch, :trust_region)
                 write(file, "grad_tol = $grad_tol\n")
             elseif metodo == :spg
                 write(file, "grad_tol = $grad_tol\n")
@@ -289,7 +291,7 @@ function run_problems(;
                 # upper_bfgs,
                 copy(X0),
                 # Fminbox(BFGS(linesearch = SafeThenBackTracking())),
-                BFGS(linesearch = SafeThenBackTracking(hagerzhang_maxiter=10)),
+                BFGS(linesearch = bfgs_default_like()),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
@@ -320,6 +322,48 @@ function run_problems(;
             resultado = monta_resultado(:bfgs, resumo_bfgs, X_bfgs, fval_bfgs, arquivo; status = status_bfgs, avaliacoes = avaliacoes_bfgs[], iteracoes = iteracoes_bfgs, tempo_s = tempo_bfgs)
             salva_resumo!(arquivo; f_final = fval_bfgs, RMSD = resultado.RMSD, x_final = X_bfgs, status = status_bfgs, avaliacoes = avaliacoes_bfgs[], tempo_s = tempo_bfgs, extra = "iteracoes = $iteracoes_bfgs\nmaxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = QuadraticBacktracking\ngradientes = $(avaliacoes_bfgs[])\ngnorm = $(norm(G_bfgs))\n")
             resultados[:bfgs] = resultado
+
+        elseif metodo == :bfgs_linesearch
+            println("Rodando BFGS custom com linesearch default-like com dimensão = ", dim)
+            avaliacoes_bfgs_custom = Ref(0)
+
+            function f_bfgs_custom(x)
+                f = f_penalizada_bfgs(x)
+                registra_avaliacao!(arquivo, avaliacoes_bfgs_custom[], f, x)
+                avaliacoes_bfgs_custom[] += 1
+                return f
+            end
+
+            inicio_metodo = time()
+            resultado_bfgs_custom = bfgs_default_like(
+                f_bfgs_custom,
+                g_obj!,
+                copy(X0);
+                maxiter = iterations,
+                gtol = grad_tol,
+                x_abstol = bfgs_x_abstol,
+                linesearch = DefaultLikeLineSearch(),
+            )
+            tempo_bfgs_custom = time() - inicio_metodo
+            X_bfgs_custom = copy(resultado_bfgs_custom.x)
+            fval_bfgs_custom = resultado_bfgs_custom.f
+            iteracoes_bfgs_custom = resultado_bfgs_custom.iterations
+            G_bfgs_custom = similar(X_bfgs_custom)
+            g_obj!(G_bfgs_custom, X_bfgs_custom)
+            resumo_bfgs_custom = (;
+                f = fval_bfgs_custom,
+                x = copy(X_bfgs_custom),
+                avaliacoes = avaliacoes_bfgs_custom[],
+                iteracoes = iteracoes_bfgs_custom,
+                maxiter = iterations,
+                maxfun = f_calls_limit,
+                g_abstol = grad_tol,
+                x_abstol = bfgs_x_abstol,
+                linesearch = "DefaultLikeLineSearch",
+            )
+            resultado = monta_resultado(:bfgs_linesearch, resumo_bfgs_custom, X_bfgs_custom, fval_bfgs_custom, arquivo; status = resultado_bfgs_custom.status, avaliacoes = avaliacoes_bfgs_custom[], iteracoes = iteracoes_bfgs_custom, tempo_s = tempo_bfgs_custom)
+            salva_resumo!(arquivo; f_final = fval_bfgs_custom, RMSD = resultado.RMSD, x_final = X_bfgs_custom, status = resultado_bfgs_custom.status, avaliacoes = avaliacoes_bfgs_custom[], tempo_s = tempo_bfgs_custom, extra = "iteracoes = $iteracoes_bfgs_custom\nmaxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = DefaultLikeLineSearch\ngradientes = $(avaliacoes_bfgs_custom[])\ngnorm = $(norm(G_bfgs_custom))\n")
+            resultados[:bfgs_linesearch] = resultado
 
         elseif metodo == :trust_region
             println("Rodando Trust Region BFGS com dimensão = ", dim)

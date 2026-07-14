@@ -423,6 +423,306 @@ end
 
 
 
+struct DefaultLikeLineSearch
+    c1::Float64
+    c2::Float64
+    alpha0::Float64
+    alpha_max::Float64
+    expansion::Float64
+    maxiter::Int
+    zoom_maxiter::Int
+end
+
+function DefaultLikeLineSearch(;
+    c1 = 1.0e-4,
+    c2 = 0.9,
+    alpha0 = 1.0,
+    alpha_max = 10.0,
+    expansion = 2.0,
+    maxiter = 20,
+    zoom_maxiter = 25,
+)
+    return DefaultLikeLineSearch(
+        Float64(c1),
+        Float64(c2),
+        Float64(alpha0),
+        Float64(alpha_max),
+        Float64(expansion),
+        Int(maxiter),
+        Int(zoom_maxiter),
+    )
+end
+
+function _eval_line_and_grad!(f, g!, x, p, alpha, x_trial, g_trial)
+    @. x_trial = x + alpha * p
+    phi = Float64(f(x_trial))
+    g!(g_trial, x_trial)
+    dphi = dot(g_trial, p)
+    return phi, dphi
+end
+
+function _zoom_default_like!(
+    f,
+    g!,
+    x,
+    p,
+    phi0,
+    dphi0,
+    alpha_lo,
+    phi_lo,
+    dphi_lo,
+    alpha_hi,
+    alpha_hi_phi,
+    alpha_hi_dphi,
+    x_trial,
+    g_trial,
+    ls::DefaultLikeLineSearch,
+)
+    alpha_left = Float64(alpha_lo)
+    phi_left = Float64(phi_lo)
+    dphi_left = Float64(dphi_lo)
+    alpha_right = Float64(alpha_hi)
+
+    for _ in 1:ls.zoom_maxiter
+        alpha = 0.5 * (alpha_left + alpha_right)
+        phi, dphi = _eval_line_and_grad!(f, g!, x, p, alpha, x_trial, g_trial)
+
+        if !isfinite(phi) || !isfinite(dphi)
+            alpha_right = alpha
+            continue
+        end
+
+        if (phi > phi0 + ls.c1 * alpha * dphi0) || (phi >= phi_left)
+            alpha_right = alpha
+            continue
+        end
+
+        if abs(dphi) <= -ls.c2 * dphi0
+            return (; accepted = true, alpha, phi, dphi, status = "strong_wolfe")
+        end
+
+        if dphi * (alpha_right - alpha_left) >= 0
+            alpha_right = alpha_left
+        end
+
+        alpha_left = alpha
+        phi_left = phi
+        dphi_left = dphi
+    end
+
+    if isfinite(phi_left) && phi_left <= phi0 + ls.c1 * alpha_left * dphi0
+        return (;
+            accepted = true,
+            alpha = alpha_left,
+            phi = phi_left,
+            dphi = dphi_left,
+            status = "armijo_zoom_fallback",
+        )
+    end
+
+    return (; accepted = false, alpha = 0.0, phi = phi0, dphi = dphi0, status = "zoom_failed")
+end
+
+function default_like_linesearch!(
+    f,
+    g!,
+    x,
+    p,
+    fx,
+    gx,
+    x_trial,
+    g_trial;
+    ls = DefaultLikeLineSearch(),
+    delta = 0.1,
+)
+    dphi0 = dot(gx, p)
+    if !isfinite(dphi0) || dphi0 >= 0
+        return (; accepted = false, alpha = 0.0, phi = fx, dphi = dphi0, status = "not_descent")
+    end
+
+    pnorm = norm(p)
+    if !isfinite(pnorm) || pnorm <= eps(Float64)
+        return (; accepted = false, alpha = 0.0, phi = fx, dphi = dphi0, status = "zero_direction")
+    end
+
+    delta_eff = Float64(delta)
+    if !(delta_eff > 0)
+        delta_eff = Inf
+    end
+
+    alpha_prev = 0.0
+    phi_prev = fx
+    dphi_prev = dphi0
+    alpha = min(ls.alpha0, ls.alpha_max)
+    trust_region_backtracks = 0
+
+    for iter in 1:ls.maxiter
+        if alpha * pnorm > delta_eff
+            alpha *= 0.5
+            trust_region_backtracks += 1
+            if alpha <= eps(Float64)
+                break
+            end
+            continue
+        end
+
+        phi, dphi = _eval_line_and_grad!(f, g!, x, p, alpha, x_trial, g_trial)
+
+        if !isfinite(phi) || !isfinite(dphi)
+            alpha *= 0.5
+            if alpha <= eps(Float64)
+                break
+            end
+            continue
+        end
+
+        if (phi > fx + ls.c1 * alpha * dphi0) || (iter > 1 && phi >= phi_prev)
+            return _zoom_default_like!(
+                f, g!, x, p, fx, dphi0,
+                alpha_prev, phi_prev, dphi_prev,
+                alpha, phi, dphi,
+                x_trial, g_trial, ls,
+            )
+        end
+
+        if abs(dphi) <= -ls.c2 * dphi0
+            return (; accepted = true, alpha, phi, dphi, status = "strong_wolfe")
+        end
+
+        if dphi >= 0
+            return _zoom_default_like!(
+                f, g!, x, p, fx, dphi0,
+                alpha, phi, dphi,
+                alpha_prev, phi_prev, dphi_prev,
+                x_trial, g_trial, ls,
+            )
+        end
+
+        alpha_prev = alpha
+        phi_prev = phi
+        dphi_prev = dphi
+        alpha = min(ls.expansion * alpha, ls.alpha_max)
+    end
+
+    status = trust_region_backtracks > 0 ? "delta_backtracking_failed" : "linesearch_failed"
+    return (; accepted = false, alpha = 0.0, phi = fx, dphi = dphi0, status)
+end
+
+function _identity_matrix_like(x)
+    T = float(eltype(x))
+    return Matrix{T}(I, length(x), length(x))
+end
+
+function _bfgs_inverse_update!(invH, s, y)
+    ys = dot(y, s)
+    if !isfinite(ys) || ys <= 0
+        return false
+    end
+
+    rho = 1 / ys
+    invHy = invH * y
+    yinvHy = dot(y, invHy)
+    coeff = (1 + yinvHy * rho) * rho
+    invH .+= coeff .* (s * s') .- rho .* (invHy * s' + s * invHy')
+    return true
+end
+
+function bfgs_default_like(
+    f,
+    g!,
+    x0;
+    maxiter = 100,
+    gtol = 1.0e-6,
+    x_abstol = 0.0,
+    f_abstol = 0.0,
+    delta = 0.1,
+    linesearch = DefaultLikeLineSearch(),
+    initial_invH = nothing,
+    reset_if_not_descent = true,
+    verbose = false,
+)
+    x = copy(float.(x0))
+    fx = Float64(f(x))
+    gx = similar(x)
+    g!(gx, x)
+
+    invH = initial_invH === nothing ? _identity_matrix_like(x) : Matrix{Float64}(initial_invH(x))
+    x_trial = similar(x)
+    g_trial = similar(x)
+    s = similar(x)
+    y = similar(x)
+    history = Vector{NamedTuple}()
+
+    for k in 0:maxiter
+        gnorm = norm(gx)
+        push!(history, (;
+            iter = k,
+            f = fx,
+            gnorm,
+            x = copy(x),
+            alpha = k == 0 ? missing : missing,
+            accepted = k == 0 ? true : missing,
+            linesearch_status = k == 0 ? "initial" : missing,
+        ))
+
+        if verbose
+            println("bfgs_default_like iter = $k | f = $fx | ||g|| = $gnorm")
+        end
+
+        if gnorm <= gtol
+            return (; x, f = fx, g = copy(gx), gnorm, invH, iterations = k, status = "gtol", history)
+        end
+
+        if k == maxiter
+            return (; x, f = fx, g = copy(gx), gnorm, invH, iterations = k, status = "maxiter", history)
+        end
+
+        mul!(s, invH, gx)
+        rmul!(s, -1.0)
+        descent = dot(gx, s)
+
+        if (!isfinite(descent) || descent >= 0) && reset_if_not_descent
+            invH .= _identity_matrix_like(x)
+            s .= .-gx
+        end
+
+        ls_result = default_like_linesearch!(f, g!, x, s, fx, gx, x_trial, g_trial; ls = linesearch, delta = delta)
+        accepted = ls_result.accepted && ls_result.alpha > 0
+
+        history[end] = merge(history[end], (;
+            alpha = ls_result.alpha,
+            accepted,
+            linesearch_status = ls_result.status,
+            delta,
+        ))
+
+        if !accepted
+            return (; x, f = fx, g = copy(gx), gnorm, invH, iterations = k, status = ls_result.status, history)
+        end
+
+        s .= x_trial .- x
+        y .= g_trial .- gx
+        stepnorm = norm(s)
+        fchange = abs(ls_result.phi - fx)
+
+        x .= x_trial
+        gx .= g_trial
+        fx = ls_result.phi
+
+        if !_bfgs_inverse_update!(invH, s, y)
+            invH .= _identity_matrix_like(x)
+        end
+
+        if x_abstol > 0 && stepnorm <= x_abstol
+            return (; x, f = fx, g = copy(gx), gnorm = norm(gx), invH, iterations = k + 1, status = "x_abstol", history)
+        end
+
+        if f_abstol > 0 && fchange <= f_abstol
+            return (; x, f = fx, g = copy(gx), gnorm = norm(gx), invH, iterations = k + 1, status = "f_abstol", history)
+        end
+    end
+end
+
 function passo_cauchy_trust_region(g, B, Δ)
     ng = norm(g)
     if ng == 0 || Δ <= 0
