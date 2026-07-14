@@ -87,6 +87,7 @@ function run_problems(;
     rhobeg = 0.05,
     rhoend = 0.0001,
     grad_tol = 0.001,
+    bfgs_linesearch_delta = 0.1,
     rmsd_tol = 0.09,
     fun::Function = sv_fork_assimilation,
     method = "all"
@@ -194,6 +195,9 @@ function run_problems(;
             write(file, "rmsd_tol = $rmsd_tol\n")
             if metodo in (:bfgs, :bfgs_linesearch, :trust_region)
                 write(file, "grad_tol = $grad_tol\n")
+                if metodo == :bfgs_linesearch
+                    write(file, "bfgs_linesearch_delta = $bfgs_linesearch_delta\n")
+                end
             elseif metodo == :spg
                 write(file, "grad_tol = $grad_tol\n")
             elseif metodo in (:bobyqa, :mads)
@@ -342,6 +346,7 @@ function run_problems(;
                 maxiter = iterations,
                 gtol = grad_tol,
                 x_abstol = bfgs_x_abstol,
+                delta = bfgs_linesearch_delta,
                 linesearch = DefaultLikeLineSearch(),
             )
             tempo_bfgs_custom = time() - inicio_metodo
@@ -360,9 +365,10 @@ function run_problems(;
                 g_abstol = grad_tol,
                 x_abstol = bfgs_x_abstol,
                 linesearch = "DefaultLikeLineSearch",
+                delta = bfgs_linesearch_delta,
             )
             resultado = monta_resultado(:bfgs_linesearch, resumo_bfgs_custom, X_bfgs_custom, fval_bfgs_custom, arquivo; status = resultado_bfgs_custom.status, avaliacoes = avaliacoes_bfgs_custom[], iteracoes = iteracoes_bfgs_custom, tempo_s = tempo_bfgs_custom)
-            salva_resumo!(arquivo; f_final = fval_bfgs_custom, RMSD = resultado.RMSD, x_final = X_bfgs_custom, status = resultado_bfgs_custom.status, avaliacoes = avaliacoes_bfgs_custom[], tempo_s = tempo_bfgs_custom, extra = "iteracoes = $iteracoes_bfgs_custom\nmaxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\nlinesearch = DefaultLikeLineSearch\ngradientes = $(avaliacoes_bfgs_custom[])\ngnorm = $(norm(G_bfgs_custom))\n")
+            salva_resumo!(arquivo; f_final = fval_bfgs_custom, RMSD = resultado.RMSD, x_final = X_bfgs_custom, status = resultado_bfgs_custom.status, avaliacoes = avaliacoes_bfgs_custom[], tempo_s = tempo_bfgs_custom, extra = "iteracoes = $iteracoes_bfgs_custom\nmaxiter = $iterations\ngrad_tol = $grad_tol\nx_abstol = $bfgs_x_abstol\ndelta = $bfgs_linesearch_delta\nlinesearch = DefaultLikeLineSearch\ngradientes = $(avaliacoes_bfgs_custom[])\ngnorm = $(norm(G_bfgs_custom))\n")
             resultados[:bfgs_linesearch] = resultado
 
         elseif metodo == :trust_region

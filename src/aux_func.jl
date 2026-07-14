@@ -533,7 +533,7 @@ function default_like_linesearch!(
     x_trial,
     g_trial;
     ls = DefaultLikeLineSearch(),
-    delta = 0.000,
+    delta = 0.1,
 )
     dphi0 = dot(gx, p)
     if !isfinite(dphi0) || dphi0 >= 0
@@ -545,10 +545,7 @@ function default_like_linesearch!(
         return (; accepted = false, alpha = 0.0, phi = fx, dphi = dphi0, status = "zero_direction")
     end
 
-    delta_eff = Float64(delta)
-    if !(delta_eff > 0)
-        delta_eff = Inf
-    end
+    delta_eff = max(Float64(delta), 0.0)
 
     alpha_prev = 0.0
     phi_prev = fx
