@@ -533,7 +533,7 @@ function default_like_linesearch!(
     x_trial,
     g_trial;
     ls = DefaultLikeLineSearch(),
-    delta = 0.1,
+    delta = 0.000,
 )
     dphi0 = dot(gx, p)
     if !isfinite(dphi0) || dphi0 >= 0
