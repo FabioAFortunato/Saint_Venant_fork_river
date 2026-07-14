@@ -291,7 +291,7 @@ function run_problems(;
                 # upper_bfgs,
                 copy(X0),
                 # Fminbox(BFGS(linesearch = SafeThenBackTracking())),
-                BFGS(linesearch = bfgs_default_like()),
+                BFGS(linesearch = SafeThenBackTracking(hagerzhang_maxiter=10)),
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
