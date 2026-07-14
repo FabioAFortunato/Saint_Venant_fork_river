@@ -286,7 +286,10 @@ function run_problems(;
                 avaliacoes_bfgs[] += 1
                 return f
             end
-
+	    method = BFGS(
+    		alphaguess = LineSearches.InitialStatic(alpha = bfgs_linesearch_delta),
+    		linesearch = LineSearches.HagerZhang(),
+   	    )
             inicio_metodo = time()
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
@@ -295,7 +298,7 @@ function run_problems(;
                 # upper_bfgs,
                 copy(X0),
                 # Fminbox(BFGS(linesearch = SafeThenBackTracking())),
-                BFGS(linesearch = SafeThenBackTracking(hagerzhang_maxiter=10)),
+                method,
                 Optim.Options(
                     iterations = iterations,
                     f_calls_limit = f_calls_limit,
