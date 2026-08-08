@@ -10,6 +10,7 @@ include("../src/BOBYQA_application.jl")
 include("../src/MADS_application.jl")
 include("../src/assimilacao.jl")
 include("../src/solve_sv_beta.jl")
+include("../src/ffjm2.jl")
 
 struct struct_Result
     method::String
@@ -361,10 +362,18 @@ function le_pontos_aceitos_por_aumento_proximo_bfgs(txt_output = "results/BFGS_3
     valores_aceitos = valores[indices_aceitos]
     iteracoes_aceitas = iteracoes[indices_aceitos]
     rmsd_resumo = missing
+    f_resumo = missing
+    x_resumo = missing
 
     for linha in linhas
-        if startswith(strip(linha), "RMSD =")
-            rmsd_resumo = parse(Float64, strip(split(linha, "=")[2]))
+        linha_limpa = strip(linha)
+        if startswith(linha_limpa, "RMSD =")
+            rmsd_resumo = parse(Float64, strip(split(linha_limpa, "="; limit = 2)[2]))
+        elseif startswith(linha_limpa, "f_final =")
+            f_resumo = parse(Float64, strip(split(linha_limpa, "="; limit = 2)[2]))
+        elseif startswith(linha_limpa, "x_final =")
+            texto_x = strip(split(linha_limpa, "="; limit = 2)[2])
+            x_resumo = parse.(Float64, split(strip(texto_x, ['[', ']']), ','))
         end
     end
 
@@ -378,6 +387,8 @@ function le_pontos_aceitos_por_aumento_proximo_bfgs(txt_output = "results/BFGS_3
         valores_aceitos,
         pontos_aceitos,
         rmsd_resumo,
+        f_resumo,
+        x_resumo,
     )
 end
 
@@ -479,12 +490,18 @@ function plot_assimilacao_heatmap_tend_31_latex_com_todos_bfgs_aceitos(;
 
         aceitos = le_pontos_aceitos_por_aumento_proximo_bfgs(bfgs_output)
         if isempty(aceitos.pontos_aceitos)
-            @warn "Nenhum ponto aceito inferido por f[i+1] > f[i]; ignorando." bfgs_output
-            continue
+            if ismissing(aceitos.x_resumo)
+                @warn "Teste sem pontos aceitos nem x_final; ignorando." bfgs_output
+                continue
+            end
+            @warn "Nenhum ponto aceito inferido; usando x_final do resumo." bfgs_output
+            pontos_teste = [aceitos.x_resumo]
+        else
+            pontos_teste = aceitos.pontos_aceitos
         end
 
-        xs = [p[1] for p in aceitos.pontos_aceitos]
-        ys = [p[2] for p in aceitos.pontos_aceitos]
+        xs = [p[1] for p in pontos_teste]
+        ys = [p[2] for p in pontos_teste]
         rmsd_bfgs = aceitos.rmsd_resumo
 
         if ismissing(rmsd_bfgs)
@@ -551,10 +568,19 @@ function plot_assimilacao_heatmap_tend_31_latex_com_todos_bfgs_aceitos(;
         @warn "Nenhum teste de BFGS foi plotado."
     end
 
+    testes_com_f = filter(teste -> !ismissing(teste.bfgs.f_resumo), testes)
+    melhor_teste = if !isempty(testes_com_f)
+        argmin(teste -> teste.bfgs.f_resumo, testes_com_f)
+    elseif !isempty(testes)
+        argmin(teste -> teste.rmsd_bfgs, testes)
+    else
+        nothing
+    end
+
     mkpath(dirname(output))
     Plots.savefig(base.plot, output)
 
-    return merge(base, (; output, testes_bfgs = testes))
+    return merge(base, (; output, testes_bfgs = testes, melhor_teste))
 end
 
 

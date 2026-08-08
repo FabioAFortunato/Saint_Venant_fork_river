@@ -286,10 +286,7 @@ function run_problems(;
                 avaliacoes_bfgs[] += 1
                 return f
             end
-	    method = BFGS(
-    		alphaguess = LineSearches.InitialStatic(alpha = bfgs_linesearch_delta),
-    		linesearch = LineSearches.HagerZhang(),
-   	    )
+            method = BFGS()
             inicio_metodo = time()
             resultado_bfgs = Optim.optimize(
                 f_bfgs_optim,
@@ -1287,6 +1284,10 @@ function minimizar_L_sv_bfgs(
     tentativas_por_taxa = 10
     rmsd_tol_restart = 0.06
     X = copy(float.(x))
+    melhor_X = copy(X)
+    melhor_f = Inf
+    melhor_rmsd = Inf
+    melhor_restart = 0
     tempo_total_inicio = time()
 
     open(nome, "w") do file
@@ -1326,12 +1327,21 @@ function minimizar_L_sv_bfgs(
             ),
         )
 
-        f_bfgs = Optim.minimum(resultado_bfgs)
+        X_bfgs = copy(float.(Optim.minimizer(resultado_bfgs)))
+        f_bfgs = Float64(Optim.minimum(resultado_bfgs))
 
-        z_erro = sv_fork(X[1:end-1], tmax)
+        z_erro = sv_fork(X_bfgs[1:end-1], tmax)
         rmsd = norm(z_erro) / sqrt(length(z_erro))
-        f_obj_base = soma_desvio_quadratico(X)
+        f_obj_base = soma_desvio_quadratico(X_bfgs)
         avaliacoes_restart = n_calfun - n_calfun_inicio
+
+        if melhor_restart == 0 ||
+           (isfinite(f_bfgs) && (!isfinite(melhor_f) || f_bfgs < melhor_f))
+            melhor_X = copy(X_bfgs)
+            melhor_f = f_bfgs
+            melhor_rmsd = rmsd
+            melhor_restart = i
+        end
 
         println("BFGS finalizado | f = $f_bfgs | soma = $f_obj_base | RMSD = $rmsd | avaliacoes = $avaliacoes_restart")
 
@@ -1343,7 +1353,7 @@ function minimizar_L_sv_bfgs(
             write(file, "RMSD_bfgs = $rmsd\n")
             write(file, "sum_x_xref2_bfgs = $f_obj_base\n")
             write(file, "avaliacoes_bfgs = $avaliacoes_restart\n")
-            write(file, "x_bfgs = $(collect(X))\n")
+            write(file, "x_bfgs = $(collect(X_bfgs))\n")
         end
 
         if rmsd < rmsd_tol_restart
@@ -1354,7 +1364,7 @@ function minimizar_L_sv_bfgs(
         if i < n_restart
             X = busca_perturbacao_segura(
                 f_obj,
-                X;
+                X_bfgs;
                 taxa_inicial=taxa_inicial,
                 taxa_min=taxa_min,
                 tentativas_por_taxa=tentativas_por_taxa,
@@ -1367,9 +1377,13 @@ function minimizar_L_sv_bfgs(
     tempo_total = time() - tempo_total_inicio
     open(nome, "a") do file
         write(file, "\ntempo_bfgs_s = $(round(tempo_total, digits=3))\n")
+        write(file, "melhor_restart = $melhor_restart\n")
+        write(file, "melhor_f_bfgs = $melhor_f\n")
+        write(file, "melhor_RMSD_bfgs = $melhor_rmsd\n")
+        write(file, "melhor_x_bfgs = $(collect(melhor_X))\n")
     end
 
-    return X
+    return melhor_X
 end
 
 
