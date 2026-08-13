@@ -2,17 +2,27 @@ using ForwardDiff
 using LinearAlgebra
 using Printf
 
+include("sv_fork.jl")
+
 # ==============================================================================
 # Tradução para Julia de `sr1gemini.for` e `bfgsgemini.for`: métodos quase-
 # Newton SR1 e BFGS com busca linear de Armijo (backtracking) e teste de
 # direção de descida (substitui a direção por -grad quando ela não é de
-# descida). A tradução é literal: mantém a mesma sequência de operações,
-# incluindo o critério de parada por número de avaliações da função.
+# descida).
 #
-# Nota: no Fortran original (`sr1gemini.for`), o teste de limite de
-# avaliações da função dentro do backtracking do SR1 compara `nef` com
-# `maxit` (e não com `maxnef`, como faz a versão BFGS). Esse comportamento é
-# preservado abaixo por fidelidade à tradução.
+# Duas correções em relação à tradução literal do Fortran original:
+# 1. `sr1_backtracking` comparava o limite de avaliações da função dentro do
+#    backtracking com `maxit` em vez de `maxnef` (bug do Fortran original,
+#    que deixava `maxnef` sem efeito); agora usa `maxnef`, como
+#    `bfgs_backtracking` sempre fez.
+# 2. O teste de Armijo (`fnext > fval + c1*alpha*gdotp`) e o teste de direção
+#    de descida (`gdotp >= 0.0`) tratam mal `NaN`: em IEEE 754, qualquer
+#    comparação com `NaN` é `false`, então um `fnext`/`gdotp` não finito
+#    passava nesses testes como se fosse um bom passo/direção. Isso ficou
+#    crítico depois que `sv_objective_from_residual` passou a devolver `NaN`
+#    (em vez de saturar em `1e26`) para pontos inválidos: sem a correção, um
+#    passo que caísse numa região onde a simulação diverge era aceito
+#    silenciosamente, corrompendo `x` com `NaN` até o fim da otimização.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -143,8 +153,11 @@ Se `show_trace = true`, imprime a cada iteração o número da iteração, `f`,
 de `H` foi aceita pela salvaguarda ou rejeitada.
 
 Retorna `(x, info, kon, nef, neg, notdes)`, onde `info` vale `0` se convergiu
-(`‖grad f‖ < tol`), `1` se atingiu `maxit` iterações, ou `2` se atingiu o
-limite de avaliações da função dentro do backtracking.
+(`‖grad f‖ < tol`), `1` se atingiu `maxit` iterações, `2` se atingiu
+`maxnef` avaliações da função, ou `3` se o backtracking não satisfez Armijo
+antes de `alpha` cair a `1e-12` ou menos (busca linear falhou). O teste de
+Armijo trata `f(x)` não finito (`NaN`/`Inf`) como reprovado, não como um
+passo válido.
 """
 function sr1_backtracking(
     f, grad, x0::AbstractVector, tol::Real, maxit::Integer, maxnef::Integer;
@@ -192,34 +205,51 @@ function sr1_backtracking(
         # Direção quasi-Newton: p = -H*g
         p = -H * g
 
-        # Teste de direção de descida: g'*p < 0
+        # Teste de direção de descida: g'*p < 0. `!(gdotp < 0.0)` (em vez de
+        # `gdotp >= 0.0`) também dispara o fallback quando `gdotp` é `NaN`
+        # (comparação com NaN é sempre `false` em IEEE 754, então `>= 0.0`
+        # deixaria passar uma direção degenerada sem detectá-la).
         gdotp = dot(g, p)
-        if gdotp >= 0.0
+        if !(gdotp < 0.0)
             p = -g
             H = Matrix{Float64}(I, n, n)
             notdes += 1
             gdotp = -gnorm^2
         end
 
-        # Busca linear (Armijo backtracking)
+        # Busca linear (Armijo backtracking). `isfinite(fnext)` é exigido
+        # explicitamente: sem isso, um `fnext` não finito (`NaN`/`Inf`, que
+        # `sv_objective_from_residual` devolve para pontos inválidos) reprova
+        # a comparação `fnext > ...` (sempre `false` para NaN) e seria aceito
+        # como se satisfizesse Armijo.
         alpha = 1.0
         xnext = similar(x)
+        armijo_satisfeito = false
         while true
             xnext = x .+ alpha .* p
             fnext = f(xnext)
             nef += 1
-            if nef >= maxit
+            if nef >= maxnef
                 show_trace && @printf(
-                    "iter %4d | f = %.6e | ||g|| = %.3e | alpha = %.3e | limite de avaliações (nef >= maxit) atingido\n",
+                    "iter %4d | f = %.6e | ||g|| = %.3e | alpha = %.3e | limite de avaliações (nef >= maxnef) atingido\n",
                     kon, fval, gnorm, alpha,
                 )
                 return (x = x, info = 2, kon = kon, nef = nef, neg = neg, notdes = notdes)
             end
-            if fnext > fval + c1 * alpha * gdotp
-                alpha *= rho
-                alpha > 1.0e-12 && continue
+            if isfinite(fnext) && fnext <= fval + c1 * alpha * gdotp
+                armijo_satisfeito = true
+                break
             end
-            break
+            alpha *= rho
+            alpha > 1.0e-12 || break
+        end
+
+        if !armijo_satisfeito
+            show_trace && @printf(
+                "iter %4d | f = %.6e | ||g|| = %.3e | alpha = %.3e | busca linear falhou (Armijo não satisfeito)\n",
+                kon, fval, gnorm, alpha,
+            )
+            return (x = x, info = 3, kon = kon, nef = nef, neg = neg, notdes = notdes)
         end
 
         # s = alpha*p, y = g_next - g
@@ -268,8 +298,11 @@ Se `show_trace = true`, imprime a cada iteração o número da iteração, `f`,
 de `H` foi aceita pela salvaguarda ou rejeitada.
 
 Retorna `(x, info, kon, nef, neg, notdes)`, onde `info` vale `0` se convergiu
-(`‖grad f‖ < tol`), `1` se atingiu `maxit` iterações, ou `2` se atingiu
-`maxnef` avaliações da função.
+(`‖grad f‖ < tol`), `1` se atingiu `maxit` iterações, `2` se atingiu
+`maxnef` avaliações da função, ou `3` se o backtracking não satisfez Armijo
+antes de `alpha` cair a `1e-12` ou menos (busca linear falhou). O teste de
+Armijo trata `f(x)` não finito (`NaN`/`Inf`) como reprovado, não como um
+passo válido.
 """
 function bfgs_backtracking(
     f, grad, x0::AbstractVector, tol::Real, maxit::Integer, maxnef::Integer;
@@ -312,19 +345,27 @@ function bfgs_backtracking(
         # Direção p = -H*g
         p = -H * g
 
-        # Teste de direção de descida: g'*p < 0
+        # Teste de direção de descida: g'*p < 0. `!(gdotp < 0.0)` (em vez de
+        # `gdotp >= 0.0`) também dispara o fallback quando `gdotp` é `NaN`
+        # (comparação com NaN é sempre `false` em IEEE 754, então `>= 0.0`
+        # deixaria passar uma direção degenerada sem detectá-la).
         gdotp = dot(g, p)
-        if gdotp >= 0.0
+        if !(gdotp < 0.0)
             notdes += 1
             p = -g
             H = Matrix{Float64}(I, n, n)
             gdotp = -gnorm^2
         end
 
-        # Busca linear (Armijo backtracking)
+        # Busca linear (Armijo backtracking). `isfinite(fnext)` é exigido
+        # explicitamente: sem isso, um `fnext` não finito (`NaN`/`Inf`, que
+        # `sv_objective_from_residual` devolve para pontos inválidos) reprova
+        # a comparação `fnext > ...` (sempre `false` para NaN) e seria aceito
+        # como se satisfizesse Armijo.
         alpha = 1.0
         fnext = 0.0
         xnext = similar(x)
+        armijo_satisfeito = false
         while true
             xnext = x .+ alpha .* p
             fnext = f(xnext)
@@ -336,11 +377,20 @@ function bfgs_backtracking(
                 )
                 return (x = x, info = 2, kon = kon, nef = nef, neg = neg, notdes = notdes)
             end
-            if fnext > fval + c1 * alpha * gdotp
-                alpha *= rho
-                alpha > 1.0e-12 && continue
+            if isfinite(fnext) && fnext <= fval + c1 * alpha * gdotp
+                armijo_satisfeito = true
+                break
             end
-            break
+            alpha *= rho
+            alpha > 1.0e-12 || break
+        end
+
+        if !armijo_satisfeito
+            show_trace && @printf(
+                "iter %4d | f = %.6e | ||g|| = %.3e | alpha = %.3e | busca linear falhou (Armijo não satisfeito)\n",
+                kon, fval_start, gnorm, alpha,
+            )
+            return (x = x, info = 3, kon = kon, nef = nef, neg = neg, notdes = notdes)
         end
 
         fval = fnext
@@ -435,39 +485,83 @@ function sv_box_penalty(x::AbstractVector, lower::AbstractVector, upper::Abstrac
 end
 
 """
-    sv_objective(F, x; penalty_weight=1e6, lower=zeros(length(x)), upper=fill(0.5, length(x)))
+    sv_objective_from_residual(residual, x; penalty_weight=1e6, lower=zeros(length(x)), upper=fill(0.5, length(x)))
 
-Função objetivo escalar `sum(F(x).^2) + penalidade externa de caixa`, a
-partir de um resíduo vetorial `F` (por padrão [`sv_residual`](@ref)), no
-mesmo esquema usado por `bfgs_puro_penalizado` (ver `ffjm2.jl`). Chama `F`
-uma única vez; não calcula gradiente algum.
+Núcleo matemático da função objetivo compartilhada por todo `bfgs_*`/`sr1_*`
+deste arquivo e de `ffjm2.jl` (`bfgs_puro`, `bfgs_puro_penalizado`,
+`bfgs_puro_armijo`, `teste_sr1_bfgs_sv`, `comparar_bfgs_spg_bobyqa_mads`):
+`sum(residual.^2) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+devolvido como `Inf` quando o resultado não é finito ou excede `1000`. `Inf`
+sinaliza a qualquer line search baseada em `isfinite`/comparação de valores
+(`BackTracking` de ordem 2, `LineSearches.jl`; a busca interna do
+`SPGBox.jl`) que o ponto é inválido e deve reduzir o passo, em vez de deixar
+o solver avançar para uma região onde a simulação diverge. Usar `Inf` em vez
+de `NaN` é importante para o `SPGBox.jl`: sua checagem de aceite de passo é
+uma comparação direta (`fn >= fref + gamma*gtd`), que com `NaN` é sempre
+falsa (aceitando pontos inválidos), mas com `Inf` funciona corretamente
+(sempre verdadeira, rejeitando o passo).
+
+Recebe o resíduo já calculado, em vez de `F` e `x`, para que quem já tenha
+`F(x)` em mãos (por exemplo, para reaproveitar em cache, como
+`bfgs_puro_penalizado`) não precise avaliar `F` de novo — `F` costuma ser uma
+simulação completa, cara de recalcular.
 """
-function sv_objective(
-    F, x::AbstractVector;
+function sv_objective_from_residual(
+    residual::AbstractVector, x::AbstractVector;
     penalty_weight::Real = 1e6,
     lower::AbstractVector = zeros(length(x)),
     upper::AbstractVector = fill(0.5, length(x)),
 )
-    value = sum(abs2, F(x))
-    return isnan(value) ? oftype(value, 1e26) : value
+    value = sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)
+    return (isfinite(value)) ? value : oftype(value, Inf)
 end
 
 """
-    sv_gradient(F, x; penalty_weight=1e6, lower=zeros(length(x)), upper=fill(0.5, length(x)))
+    sv_objective(x; penalty_weight=1e6, lower=zeros(length(x)), upper=fill(0.5, length(x)))
 
-Gradiente de [`sv_objective`](@ref) por `ForwardDiff.gradient`. Como o
-gradiente é obtido por diferenciação automática direta (`ForwardDiff.Chunk`
-com todas as `length(x)` variáveis juntas), avalia `F` com números duais uma
-única vez — não chama `sv_objective` separadamente antes.
+Função objetivo escalar `sum(sv_residual(x).^2) + penalidade externa de
+caixa`. Chama [`sv_residual`](@ref) uma única vez. Ver
+[`sv_objective_from_residual`](@ref) para o núcleo matemático e a saturação
+para valores não finitos.
 """
-function sv_gradient(
-    F, x::AbstractVector;
+function sv_objective(
+    x::AbstractVector;
     penalty_weight::Real = 1e6,
     lower::AbstractVector = zeros(length(x)),
     upper::AbstractVector = fill(0.5, length(x)),
 )
-    obj(z) = sv_objective(F, z; penalty_weight, lower, upper)
-    return ForwardDiff.gradient(obj, x)
+    return sv_objective_from_residual(sv_residual(x), x; penalty_weight, lower, upper)
+end
+
+"""
+    sv_gradient!(G, x; penalty_weight=1e6, lower=zeros(length(x)), upper=fill(0.5, length(x)))
+
+Gradiente de [`sv_objective`](@ref) em `G`, por `ForwardDiff.gradient!`.
+Único ponto de cálculo do gradiente desta família — quem precisar da versão
+fora do lugar (ex.: `spg_box`/`teste2.jl`, que espera `grad(x) -> vetor`, não
+`grad!(G, x)`) aloca `G` e chama isso no local, em vez de existir uma segunda
+função em paralelo.
+
+Reconstrói a `ForwardDiff.GradientConfig` a cada chamada em vez de
+reaproveitar uma fixa entre iterações: o custo de montá-la é desprezível
+perto do de `sv_residual` (uma simulação completa do Saint-Venant), então
+cachear a `config` só adicionava uma segunda API sem ganho de desempenho
+mensurável. A `config` usa `ForwardDiff.Chunk{length(x)}()` — chunk do
+tamanho da dimensão inteira, para derivar em todas as dimensões de uma vez
+(uma única avaliação de `sv_residual` com números duais cobrindo todas as
+direções) em vez de deixar o `ForwardDiff` escolher um chunk menor e dividir
+o gradiente em várias avaliações.
+"""
+function sv_gradient!(
+    G::AbstractVector, x::AbstractVector;
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x)),
+    upper::AbstractVector = fill(0.5, length(x)),
+)
+    obj(z) = sv_objective(z; penalty_weight, lower, upper)
+    config = ForwardDiff.GradientConfig(obj, x, ForwardDiff.Chunk{length(x)}())
+    ForwardDiff.gradient!(G, obj, x, config)
+    return G
 end
 
 """
@@ -479,9 +573,7 @@ rugosidade do modelo Saint-Venant), a partir de `x0 = fill(0.09, 3)`.
 
 Como `sv_residual` envolve uma simulação completa do modelo, os limites
 padrão de iterações/avaliações são os mesmos usados em `bfgs_puro_penalizado`
-(`ffjm2.jl`), bem mais modestos que os do teste de Rosenbrock. Note que, por
-fidelidade ao Fortran original, `sr1_backtracking` limita o número de
-avaliações da função pelo próprio `maxit` (não por `maxnef`).
+(`ffjm2.jl`), bem mais modestos que os do teste de Rosenbrock.
 """
 function teste_sr1_bfgs_sv(;
     x0::AbstractVector = fill(0.09, 3),
@@ -493,8 +585,12 @@ function teste_sr1_bfgs_sv(;
     upper::AbstractVector = fill(0.5, length(x0)),
     show_trace::Bool = true,
 )
-    objective(x) = sv_objective(sv_residual, x; penalty_weight, lower, upper)
-    gradient(x) = sv_gradient(sv_residual, x; penalty_weight, lower, upper)
+    objective(x) = sv_objective(x; penalty_weight, lower, upper)
+    gradient(x) = begin
+        G = similar(x)
+        sv_gradient!(G, x; penalty_weight, lower, upper)
+        G
+    end
 
     println("=========================================")
     println("   SR1 + BACKTRACKING (Saint-Venant)     ")
