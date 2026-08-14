@@ -976,6 +976,121 @@ function _write_comparison_row(io, row)
 end
 
 """
+    comparar_buscas_lineares_ffjm2(; kwargs...)
+
+Compara `ffjm2` com três buscas lineares na condição (2.3.4) do Algoritmo
+2.1: [`SimpleBackTracking`](@ref) (geométrico, `alpha=1`/`rho=0.5`, sem
+interpolação) e `LineSearches.BackTracking` de ordem 2 e ordem 3
+(interpolação quadrática/cúbica). `LineSearches.HagerZhang` não é testado
+aqui: `ffjm2` chama a busca linear pelo protocolo direto de 4 argumentos
+`linesearch(ϕ, α₀, φ₀, φ'₀)` (ver linha ~342), que `HagerZhang` não
+implementa. Cada busca linear é executada para cada combinação de
+`dims` (dimensão de `x0 = fill(0.09, dim)`) e `model_multistarts`
+(multi-start do subproblema quártico interno). O CSV contém as mesmas
+métricas de `comparar_ffjm2_bfgs`.
+"""
+function comparar_buscas_lineares_ffjm2(;
+    simulation = sv_fork_assimilation,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_buscas_lineares_ffjm2_sr1.tsv")),
+    ffjm2_options = (;),
+    update::Symbol = :sr1,
+    dims = (3, 10),
+    model_multistarts = (1, 10, 100),
+    show_trace::Bool = true,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    tend = 31.0
+    test = 1
+    F_residual(x) = simulation(x, 0.0, tend, nothing).erro
+
+    function raw_metrics(x)
+        residual = collect(F_residual(x))
+        sse = sum(abs2, residual)
+        rmsd = sqrt(sse / length(residual))
+        dim = length(x)
+        objective(z) = sum(abs2, F_residual(z))
+        config = ForwardDiff.GradientConfig(objective, x, ForwardDiff.Chunk{dim}())
+        gradient = ForwardDiff.gradient(objective, x, config)
+        return (; sse, rmsd, gradient_norm = norm(gradient))
+    end
+
+    open(output, "w") do io
+        write(
+            io,
+            "tend\tdimension\ttest\tmethod\tmodel_multistart\tsum_fi_squared\tRMSD\tgradient_norm\t",
+            "external_evaluations\tfunction_evaluations\tgradient_evaluations\t",
+            "function_evaluation_time_seconds\tgradient_evaluation_time_seconds\t",
+            "total_function_evaluation_time_seconds\ttotal_gradient_evaluation_time_seconds\t",
+            "execution_time_seconds\titerations\tconverged\t",
+            "status\tx0\tsolution\n",
+        )
+
+        for dim in dims
+            initial = fill(0.09, dim)
+            for model_multistart in model_multistarts
+                println(
+                    "\nComparação de buscas lineares no ffjm2: tend = $tend, dimensão = $dim, ",
+                    "teste = $test, x0 = $initial, multi-start do subproblema = $model_multistart",
+                )
+
+                for search in (
+                    (name = "backtracking_simples", linesearch = SimpleBackTracking()),
+                    (name = "backtracking_ordem_2", linesearch = LineSearches.BackTracking(order = 2)),
+                    (name = "backtracking_ordem_3", linesearch = LineSearches.BackTracking(order = 3)),
+                )
+                    println("\nExecutando ffjm2 com $(search.name)")
+                    ff_options = merge(
+                        ffjm2_options,
+                        (; update, model_multistart, linesearch = search.linesearch, show_trace),
+                    )
+                    external_evaluations = Ref(0)
+                    function counted_residual(x)
+                        external_evaluations[] += 1
+                        return F_residual(x)
+                    end
+                    result = ffjm2(counted_residual, initial; ff_options...)
+                    minimizer = copy(result.minimizer)
+                    metrics = raw_metrics(minimizer)
+                    row = (;
+                        tend,
+                        dimension = dim,
+                        test,
+                        method = search.name,
+                        model_multistart,
+                        metrics...,
+                        external_evaluations = external_evaluations[],
+                        function_evaluations = result.function_evaluations,
+                        gradient_evaluations = result.gradient_evaluations,
+                        function_evaluation_time_seconds = result.function_evaluation_time_seconds,
+                        gradient_evaluation_time_seconds = result.gradient_evaluation_time_seconds,
+                        total_function_evaluation_time_seconds = result.total_function_evaluation_time_seconds,
+                        total_gradient_evaluation_time_seconds = result.total_gradient_evaluation_time_seconds,
+                        execution_time_seconds = result.execution_time_seconds,
+                        iterations = result.iterations,
+                        converged = result.converged,
+                        status = String(result.status),
+                        x0 = copy(initial),
+                        solution = minimizer,
+                    )
+                    push!(rows, row)
+                    _write_comparison_row(io, row)
+                    flush(io)
+                    println(
+                        "Avaliações externas ffjm2 ($(search.name)) = ", external_evaluations[],
+                        " | avaliações de f = ", result.function_evaluations,
+                        " | chamadas do gradiente = ", result.gradient_evaluations,
+                    )
+                end
+            end
+        end
+    end
+
+    println("Comparação salva em: $output")
+    return (; rows, output)
+end
+
+"""
     comparar_backtracking(; kwargs...)
 
 Compara `Optim.BFGS()` (via [`bfgs_puro_penalizado`](@ref)) com quatro
@@ -2254,6 +2369,33 @@ function (linesearch::SimpleBackTracking)(
         value = phi(alpha)
         if isfinite(value) &&
            value <= initial_value + linesearch.c1 * alpha * initial_slope
+            return alpha, value
+        end
+        alpha *= linesearch.rho
+        if alpha < linesearch.min_alpha
+            throw(LineSearches.LineSearchException(
+                "Backtracking simples atingiu o alpha mínimo sem satisfazer Armijo.",
+                zero(alpha),
+            ))
+        end
+    end
+    throw(LineSearches.LineSearchException(
+        "Backtracking simples atingiu o limite de iterações sem satisfazer Armijo.",
+        zero(alpha),
+    ))
+end
+
+# Protocolo de 4 argumentos `linesearch(ϕ, α₀, φ₀, φ'₀)`, usado diretamente
+# por `ffjm2` (ver seção 2.3.4) em vez do protocolo de 8 argumentos do
+# `Optim.jl`/`NLSolversBase` acima. Mesma condição de Armijo e mesmo `alpha`
+# inicial fixo (`linesearch.alpha`, ignorando `_αinitial`, tal como o método
+# de 8 argumentos ignora `_initial_alpha`).
+function (linesearch::SimpleBackTracking)(ϕ, _αinitial, ϕ_0, dϕ_0)
+    alpha = linesearch.alpha
+    for _ in 0:linesearch.iterations
+        value = ϕ(alpha)
+        if isfinite(value) &&
+           value <= ϕ_0 + linesearch.c1 * alpha * dϕ_0
             return alpha, value
         end
         alpha *= linesearch.rho
