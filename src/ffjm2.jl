@@ -131,13 +131,13 @@ function ffjm2(
     x0::AbstractVector;
     update::Symbol = :bfgs,
     jacobian = nothing,
-    maxiter::Integer = 200,
-    g_tol::Real = 1e-2,
+    maxiter::Integer = 1000,
+    g_tol::Real = 1e-8,
     residual_rms_tol::Union{Nothing,Real} = 0.0,
-    x_tol::Real = 1e-6,
-    f_rel_tol::Union{Nothing,Real} = 1e-6,
+    x_tol::Real = 0.0,
+    f_rel_tol::Union{Nothing,Real} = 0.0,
     model_maxiter::Integer = 1000,
-    model_g_tol::Real = 1e-3,
+    model_g_tol::Real = 1e-6,
     model_multistart::Integer = 1000,
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
@@ -303,6 +303,7 @@ function ffjm2(
                 r,
                 J,
                 H,
+                g,
                 model_maxiter,
                 model_g_tol,
                 model_multistart,
@@ -566,6 +567,7 @@ function _ffjm2_model_direction(
     r,
     J,
     H,
+    g,
     maxiter,
     g_tol,
     multistart,
@@ -575,6 +577,7 @@ function _ffjm2_model_direction(
 )
     # 6.1. Congela os dados do modelo construído na iteração externa k.
     n = size(J, 2)
+    start_spread = norm(g) # WARNING MUDEI AQUI. ESTOU TESTANDO
     evaluator = _FFJM2IpoptEvaluator(collect(r), Matrix(J), H)
     rng = MersenneTwister(seed)
     starts = Vector{Vector{eltype(r)}}(undef, Int(multistart))

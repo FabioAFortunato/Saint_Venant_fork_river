@@ -2,7 +2,7 @@
 
 julia_version = "1.10.11"
 manifest_format = "2.0"
-project_hash = "30643868e8c747237f5425753a5b8d4ac00e6ef0"
+project_hash = "76ca27227d0d80a1e57873bbcee6f7aef38fbc55"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -724,6 +724,18 @@ git-tree-sha1 = "c0c9b76f3520863909825cbecdef58cd63de705a"
 uuid = "aacddb02-875f-59d6-b918-886e6ef4fbf8"
 version = "3.1.5+0"
 
+[[deps.JuMP]]
+deps = ["LinearAlgebra", "MacroTools", "MathOptInterface", "MutableArithmetics", "OrderedCollections", "PrecompileTools", "Printf", "SparseArrays"]
+git-tree-sha1 = "614b22ff014355192982b1f9a12c61298ce6a908"
+uuid = "4076af6c-e467-56ae-b986-b466b2749572"
+version = "1.31.1"
+
+    [deps.JuMP.extensions]
+    JuMPDimensionalDataExt = "DimensionalData"
+
+    [deps.JuMP.weakdeps]
+    DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+
 [[deps.Krylov]]
 deps = ["LinearAlgebra", "Printf", "SparseArrays"]
 git-tree-sha1 = "c4d19f51afc7ba2afbe32031b8f2d21b11c9e26e"
@@ -978,6 +990,24 @@ deps = ["LinearAlgebra", "SparseArrays", "Test"]
 git-tree-sha1 = "dc5b2c4c111c46bc79ac4405eeb563523b39c004"
 uuid = "d8a4904e-b15c-11e9-3269-09a3773c0cb0"
 version = "1.8.0"
+
+[[deps.NLPModels]]
+deps = ["FastClosures", "LinearAlgebra", "LinearOperators", "Printf", "SparseArrays"]
+git-tree-sha1 = "5919b1be82ca6ebfc9754cb22ddfb54f56f1d9ac"
+uuid = "a4795742-8479-5a88-8948-cc11e1c8c1a6"
+version = "0.21.12"
+
+[[deps.NLPModelsJuMP]]
+deps = ["JuMP", "LinearAlgebra", "MathOptInterface", "NLPModels", "Printf", "SolverCore", "SparseArrays"]
+git-tree-sha1 = "2c8d080e2cf5e068a817f743031c3c5ebb08804e"
+uuid = "792afdf1-32c1-5681-94e0-d7bf7a5df49e"
+version = "0.13.5"
+
+[[deps.NLSProblems]]
+deps = ["JuMP", "NLPModels", "NLPModelsJuMP"]
+git-tree-sha1 = "e91bf37cefe1a903ef142cf4af68a5d5d765292b"
+uuid = "7cde8186-f29c-533a-9367-b4054c592979"
+version = "0.5.3"
 
 [[deps.NLSolversBase]]
 deps = ["ADTypes", "DifferentiationInterface", "FiniteDiff", "LinearAlgebra"]
@@ -1555,6 +1585,16 @@ version = "1.2.0"
 
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
+
+[[deps.SolverCore]]
+deps = ["Printf"]
+git-tree-sha1 = "2cf8acd56951482e9ab0c94102556c0b5ce387a1"
+uuid = "ff4d7338-4cf1-434d-91df-b86cb86fb843"
+version = "0.3.10"
+weakdeps = ["NLPModels"]
+
+    [deps.SolverCore.extensions]
+    SolverCoreNLPModelsExt = "NLPModels"
 
 [[deps.SortingAlgorithms]]
 deps = ["DataStructures"]
