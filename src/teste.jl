@@ -1,12 +1,17 @@
 using ForwardDiff
+using JuMP
 using LinearAlgebra
 using LineSearches
 using NLPModels
+using NLPModelsJuMP
 using NLSProblems
 using Optim
 using Printf
 
 include("ffjm2.jl")
+include("ffjm2_trust.jl")
+include("ffjm2_box.jl")
+include("ffjm2_ensemble.jl")
 
 # `DynamicBackTracking` mora em ffjm2.jl (seção 11) — teste.jl inclui ffjm2.jl
 # acima, então já está disponível aqui. Ficou lá porque `comparar_backtracking`
@@ -156,6 +161,31 @@ end
 
 const MGH_PROBLEM_NAMES = [Symbol("mgh", lpad(i, 2, "0")) for i in 1:34]
 
+# ==============================================================================
+# `NLSProblems.mgh11` (Gulf research and development function) tem um bug: a
+# linha `abs(y[i] * m * i * x[2])^x[3]` deveria ser `abs(y[i] - x[2])^x[3]`
+# (ver `~/.julia/packages/NLSProblems/*/src/mgh11.jl`). Por causa disso, o
+# mínimo global conhecido do problema, x* = (50, 25, 1.5) com f(x*) = 0
+# (conferido contra o problema `GULF` do CUTEst: f(x*) ≈ 9e-14), não é mais o
+# mínimo do resíduo que o pacote instalado calcula. `mgh11_corrigido` reproduz
+# a mesma construção via JuMP/`MathOptNLSModel` que `NLSProblems.jl` usa, só
+# com a fórmula certa.
+# ==============================================================================
+
+function mgh11_corrigido(; m::Int = 100)
+    t = (1:m) ./ 100
+    y = 25 .+ (-50 .* log.(t)) .^ (2 / 3)
+    model = Model()
+    @variable(model, x[1:3])
+    set_start_value.(x, [5.00; 2.50; 0.15])
+    @NLexpression(model, F[i = 1:m], exp(-abs(y[i] - x[2])^x[3] / x[1]) - t[i])
+    return MathOptNLSModel(model, F, name = "mgh11")
+end
+
+# Ponto único de resolução de um nome de problema MGH: usa a versão corrigida
+# acima para `:mgh11` e delega a `NLSProblems.jl` para os outros 33.
+_mgh_problem(nome::Symbol) = nome === :mgh11 ? mgh11_corrigido() : getfield(NLSProblems, nome)()
+
 const _MGH_CSV_HEADER = "problem,n,m,method,f,sse,rmsd,gradient_norm,iterations,function_evaluations,gradient_evaluations,execution_time_seconds,converged,status,x0,solution\n"
 
 function _mgh_csv_row(nome::AbstractString, n::Integer, m::Integer, x0::AbstractVector, metodo::AbstractString, resultado)
@@ -199,7 +229,7 @@ modelo já construído (`nls::NLPModels.AbstractNLSModel`) quanto pelo nome
 `model_multistart=10` para acelerar testes exploratórios). Imprime um resumo
 de uma linha e devolve o `NamedTuple` de `ffjm2`.
 """
-function testar_ffjm2_mgh(nls::NLPModels.AbstractNLSModel; update::Symbol = :bfgs, show_trace::Bool = false, kwargs...)
+function testar_ffjm2_mgh(nls::NLPModels.AbstractNLSModel; update::Symbol = :bfgs, show_trace::Bool = true, kwargs...)
     F(x) = residual(nls, x)
     jacobiana(x) = jac_residual(nls, x)
 
@@ -216,7 +246,155 @@ function testar_ffjm2_mgh(nls::NLPModels.AbstractNLSModel; update::Symbol = :bfg
 end
 
 testar_ffjm2_mgh(nome::Symbol; kwargs...) =
-    testar_ffjm2_mgh(getfield(NLSProblems, nome)(); kwargs...)
+    testar_ffjm2_mgh(_mgh_problem(nome); kwargs...)
+
+# ==============================================================================
+# Mudança de variável diagonal x = D·y, D = diag(d), para problemas com chute
+# inicial desbalanceado (ex. mgh10: x0 = (0.02, 4000, 250), 6 ordens de
+# grandeza de diferença — ver [[project_mgh10_hard_case]]).
+#
+#   G(y) = F(D·y)              (mesmo valor de f, só muda a coordenada)
+#   J_G(y) = J_F(x)·D          (regra da cadeia: coluna j escalada por d_j)
+#
+# `ffjm2` roda inteiro sobre (G, y0 = x0./d) sem saber que houve reescala —
+# H_i, Δ, gnorm etc. passam a ser construídos/medidos em unidades de y. No
+# fim, desfaz-se com x* = D·y* e g(x*) = g̃(y*)./d (pois g̃ = D·g(x)).
+#
+# `d = max.(|x0|, scale_floor)` por padrão: usa a ordem de grandeza do
+# próprio chute inicial como escala de cada variável.
+# ==============================================================================
+
+"""
+    testar_ffjm2_mgh_normalizado(nls_ou_nome; update=:bfgs, scale=nothing, scale_floor=1e-8, show_trace=false, kwargs...)
+
+Igual a [`testar_ffjm2_mgh`](@ref), mas roda `ffjm2` sobre a mudança de
+variável `x = D·y` (`D = diag(scale)`) em vez de `x` diretamente — normaliza
+componentes de escala muito diferente no chute inicial (ex. `mgh10`,
+`mgh17`) antes de otimizar. `scale` por padrão é `max.(abs.(x0), scale_floor)`
+(a ordem de grandeza do próprio `x0`); passe um vetor explícito para usar
+outra escala. `kwargs` é repassado a `ffjm2`. O `NamedTuple` devolvido tem os
+mesmos campos de `ffjm2`, com `minimizer`/`gradient` já desfeitos de volta
+para as unidades originais de `x` (não de `y`), mais um campo extra `scale`
+com o `D` usado.
+"""
+function testar_ffjm2_mgh_normalizado(
+    nls::NLPModels.AbstractNLSModel;
+    update::Symbol = :bfgs,
+    scale::Union{Nothing,AbstractVector} = nothing,
+    scale_floor::Real = 1e-8,
+    show_trace::Bool = true,
+    kwargs...,
+)
+    x0 = nls.meta.x0
+    d = scale === nothing ? max.(abs.(x0), scale_floor) : collect(float.(scale))
+    length(d) == length(x0) ||
+        throw(DimensionMismatch("scale e x0 devem ter o mesmo tamanho"))
+    any(d .<= 0) && throw(ArgumentError("scale deve ser estritamente positivo"))
+
+    G(y) = residual(nls, d .* y)
+    jacobiana_y(y) = jac_residual(nls, d .* y) * Diagonal(d)
+    y0 = x0 ./ d
+
+    resultado_y = ffjm2(G, y0; jacobian = jacobiana_y, update, show_trace, kwargs...)
+
+    minimizer = d .* resultado_y.minimizer
+    gradient = resultado_y.gradient ./ d
+    resultado = merge(resultado_y, (; minimizer, gradient, scale = d))
+
+    @printf(
+        "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s (normalizado)\n",
+        nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
+        resultado.minimum, norm(resultado.gradient), resultado.iterations,
+        resultado.status, resultado.converged,
+    )
+
+    return resultado
+end
+
+testar_ffjm2_mgh_normalizado(nome::Symbol; kwargs...) =
+    testar_ffjm2_mgh_normalizado(_mgh_problem(nome); kwargs...)
+
+"""
+    testar_ffjm2_trust_mgh(nls_ou_nome; update=:bfgs, show_trace=false, kwargs...)
+
+Igual a [`testar_ffjm2_mgh`](@ref), mas roda [`ffjm2_trust`](@ref) (região de
+confiança em vez de busca linear de Armijo). `kwargs` é repassado a
+`ffjm2_trust` (ex.: `model_multistart=10`, `trust_region_initial=0.5`).
+"""
+function testar_ffjm2_trust_mgh(nls::NLPModels.AbstractNLSModel; update::Symbol = :bfgs, show_trace::Bool = true, kwargs...)
+    F(x) = residual(nls, x)
+    jacobiana(x) = jac_residual(nls, x)
+
+    resultado = ffjm2_trust(F, nls.meta.x0; jacobian = jacobiana, update, show_trace, kwargs...)
+
+    @printf(
+        "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s\n",
+        nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
+        resultado.minimum, norm(resultado.gradient), resultado.iterations,
+        resultado.status, resultado.converged,
+    )
+
+    return resultado
+end
+
+testar_ffjm2_trust_mgh(nome::Symbol; kwargs...) =
+    testar_ffjm2_trust_mgh(_mgh_problem(nome); kwargs...)
+
+"""
+    testar_ffjm2_box_mgh(nls_ou_nome; update=:bfgs, show_trace=false, kwargs...)
+
+Igual a [`testar_ffjm2_mgh`](@ref), mas roda [`ffjm2_box`](@ref) (subproblema
+restrito à caixa `‖d‖∞ ≤ Δₖ = max(‖sₖ₋₁‖, trust_region_floor)`, globalização
+por condição (2) + Armijo, como em `ffjm2`). `kwargs` é repassado a
+`ffjm2_box` (ex.: `model_multistart=10`, `trust_region_floor=0.5`).
+"""
+function testar_ffjm2_box_mgh(nls::NLPModels.AbstractNLSModel; update::Symbol = :bfgs, show_trace::Bool = true, kwargs...)
+    F(x) = residual(nls, x)
+    jacobiana(x) = jac_residual(nls, x)
+
+    resultado = ffjm2_box(F, nls.meta.x0; jacobian = jacobiana, update, show_trace, kwargs...)
+
+    @printf(
+        "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s\n",
+        nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
+        resultado.minimum, norm(resultado.gradient), resultado.iterations,
+        resultado.status, resultado.converged,
+    )
+
+    return resultado
+end
+
+testar_ffjm2_box_mgh(nome::Symbol; kwargs...) =
+    testar_ffjm2_box_mgh(_mgh_problem(nome); kwargs...)
+
+"""
+    testar_ffjm2_ensemble_mgh(nls_ou_nome; show_trace=false, kwargs...)
+
+Igual a [`testar_ffjm2_mgh`](@ref), mas roda [`ffjm2_ensemble`](@ref)
+(conjunto dos 6 modelos quase-Newton de `_ffjm2_box_update!`, direção =
+média das 6 direções do subproblema em caixa). `kwargs` é repassado a
+`ffjm2_ensemble` (ex.: `models=(:bfgs, :sr1)` para usar só um subconjunto,
+`model_multistart=5` para acelerar — lembre que o custo do subproblema é
+`length(models)` vezes o de `ffjm2_box`).
+"""
+function testar_ffjm2_ensemble_mgh(nls::NLPModels.AbstractNLSModel; show_trace::Bool = true, kwargs...)
+    F(x) = residual(nls, x)
+    jacobiana(x) = jac_residual(nls, x)
+
+    resultado = ffjm2_ensemble(F, nls.meta.x0; jacobian = jacobiana, show_trace, kwargs...)
+
+    @printf(
+        "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s\n",
+        nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
+        resultado.minimum, norm(resultado.gradient), resultado.iterations,
+        resultado.status, resultado.converged,
+    )
+
+    return resultado
+end
+
+testar_ffjm2_ensemble_mgh(nome::Symbol; kwargs...) =
+    testar_ffjm2_ensemble_mgh(_mgh_problem(nome); kwargs...)
 
 """
     testar_bfgs_backtracking_mgh(nls_ou_nome; order=2, show_trace=false, optim_options=(;))
@@ -254,12 +432,23 @@ function testar_bfgs_backtracking_mgh(
     minimizer = Optim.minimizer(result)
     gradient = gradiente!(similar(minimizer), minimizer)
     converged = Optim.converged(result)
+    status = if Optim.g_converged(result)
+        "gradient_converged"
+    elseif Optim.x_converged(result)
+        "step_converged"
+    elseif Optim.f_converged(result)
+        "function_converged"
+    elseif Optim.iteration_limit_reached(result)
+        "maximum_iterations"
+    else
+        "not_converged"
+    end
 
     @printf(
         "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s\n",
         nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
         Optim.minimum(result), norm(gradient), Optim.iterations(result),
-        converged ? "converged" : "not_converged", converged,
+        status, converged,
     )
 
     return (;
@@ -271,13 +460,13 @@ function testar_bfgs_backtracking_mgh(
         gradient_evaluations = Optim.g_calls(result),
         execution_time_seconds,
         converged,
-        status = converged ? "converged" : "not_converged",
+        status,
         result,
     )
 end
 
 testar_bfgs_backtracking_mgh(nome::Symbol; kwargs...) =
-    testar_bfgs_backtracking_mgh(getfield(NLSProblems, nome)(); kwargs...)
+    testar_bfgs_backtracking_mgh(_mgh_problem(nome); kwargs...)
 
 """
     testar_ffjm2_mgh_todos(; nomes=MGH_PROBLEM_NAMES, update=:bfgs,
@@ -304,7 +493,7 @@ function testar_ffjm2_mgh_todos(;
 
     try
         for nome in nomes
-            nls = getfield(NLSProblems, nome)()
+            nls = _mgh_problem(nome)
             try
                 resultado = testar_ffjm2_mgh(nls; update, kwargs...)
                 resultados[nome] = resultado
@@ -343,8 +532,8 @@ impedir a linha do outro método nem interromper o laço.
 """
 function comparar_ffjm2_bfgs_mgh(;
     nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
-    output::AbstractString = "results/comparacao_ffjm2_bfgs_mgh.csv",
-    update::Symbol = :bfgs,
+    output::AbstractString = "results/sr1_comparacao_ffjm2_bfgs_mgh.csv",
+    update::Symbol = :psb,
     backtracking_order::Integer = 2,
     ffjm2_options = (;),
     bfgs_options = (;),
@@ -359,7 +548,7 @@ function comparar_ffjm2_bfgs_mgh(;
         write(io, _MGH_CSV_HEADER)
 
         for nome in nomes
-            nls = getfield(NLSProblems, nome)()
+            nls = _mgh_problem(nome)
             n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
 
             try
@@ -385,5 +574,313 @@ function comparar_ffjm2_bfgs_mgh(;
     end
 
     println("Comparação MGH (ffjm2 vs $(metodo_bfgs)) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_ffjm2_trust_bfgs_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                     output="results/comparacao_ffjm2_trust_bfgs_mgh.csv",
+                                     update=:bfgs, backtracking_order=2,
+                                     ffjm2_trust_options=(;), bfgs_options=(;), show_trace=false)
+
+Igual a [`comparar_ffjm2_bfgs_mgh`](@ref), mas compara [`ffjm2_trust`](@ref)
+(região de confiança) em vez de [`ffjm2`](@ref) (busca linear de Armijo) com
+`Optim.BFGS(linesearch=LineSearches.BackTracking(order=backtracking_order))`.
+Salva duas linhas por problema em `output` (CSV), no mesmo formato de
+`comparar_ffjm2_bfgs_mgh`.
+"""
+function comparar_ffjm2_trust_bfgs_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_trust_bfgs_mgh.csv",
+    update::Symbol = :sr1,
+    backtracking_order::Integer = 2,
+    ffjm2_trust_options = (;),
+    bfgs_options = (;),
+    show_trace::Bool = false,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    metodo_ffjm2_trust = "ffjm2_trust_" * String(update)
+    metodo_bfgs = "bfgs_backtracking$(backtracking_order)"
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            try
+                resultado = testar_ffjm2_trust_mgh(nls; update, show_trace, ffjm2_trust_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_ffjm2_trust, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_ffjm2_trust)): ERRO - $(sprint(showerror, e))")
+            end
+
+            try
+                resultado = testar_bfgs_backtracking_mgh(nls; order = backtracking_order, show_trace, bfgs_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_bfgs, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_bfgs)): ERRO - $(sprint(showerror, e))")
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação MGH (ffjm2_trust vs $(metodo_bfgs)) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_ffjm2_box_bfgs_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                   output="results/comparacao_ffjm2_box_bfgs_mgh.csv",
+                                   update=:bfgs, backtracking_order=2,
+                                   ffjm2_box_options=(;), bfgs_options=(;), show_trace=false)
+
+Igual a [`comparar_ffjm2_bfgs_mgh`](@ref), mas compara [`ffjm2_box`](@ref)
+(subproblema restrito à caixa `‖d‖∞ ≤ Δₖ = max(‖sₖ₋₁‖, trust_region_floor)`,
+globalização por condição (2) + Armijo) em vez de [`ffjm2`](@ref) com
+`Optim.BFGS(linesearch=LineSearches.BackTracking(order=backtracking_order))`.
+Salva duas linhas por problema em `output` (CSV), no mesmo formato de
+`comparar_ffjm2_bfgs_mgh`.
+"""
+function comparar_ffjm2_box_bfgs_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_box_bfgs_mgh.csv",
+    update::Symbol = :sr1,
+    backtracking_order::Integer = 2,
+    ffjm2_box_options = (;),
+    bfgs_options = (;),
+    show_trace::Bool = false,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    metodo_ffjm2_box = "ffjm2_box_" * String(update)
+    metodo_bfgs = "bfgs_backtracking$(backtracking_order)"
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            try
+                resultado = testar_ffjm2_box_mgh(nls; update, show_trace, ffjm2_box_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_ffjm2_box, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_ffjm2_box)): ERRO - $(sprint(showerror, e))")
+            end
+
+            try
+                resultado = testar_bfgs_backtracking_mgh(nls; order = backtracking_order, show_trace, bfgs_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_bfgs, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_bfgs)): ERRO - $(sprint(showerror, e))")
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação MGH (ffjm2_box vs $(metodo_bfgs)) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_ffjm2_ensemble_bfgs_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                        output="results/comparacao_ffjm2_ensemble_bfgs_mgh.csv",
+                                        backtracking_order=2,
+                                        ffjm2_ensemble_options=(;), bfgs_options=(;), show_trace=false)
+
+Igual a [`comparar_ffjm2_bfgs_mgh`](@ref), mas compara [`ffjm2_ensemble`](@ref)
+(direção = média das direções dos 6 modelos quase-Newton, cada um com seu
+próprio subproblema em caixa) em vez de [`ffjm2`](@ref) com
+`Optim.BFGS(linesearch=LineSearches.BackTracking(order=backtracking_order))`.
+Salva duas linhas por problema em `output` (CSV), no mesmo formato de
+`comparar_ffjm2_bfgs_mgh`. Bem mais lento que as comparações com `ffjm2_box`
+(cada problema resolve o subproblema até 6× por iteração).
+"""
+function comparar_ffjm2_ensemble_bfgs_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_ensemble_bfgs_mgh.csv",
+    backtracking_order::Integer = 2,
+    ffjm2_ensemble_options = (;),
+    bfgs_options = (;),
+    show_trace::Bool = false,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    metodo_ffjm2_ensemble = "ffjm2_ensemble"
+    metodo_bfgs = "bfgs_backtracking$(backtracking_order)"
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            try
+                resultado = testar_ffjm2_ensemble_mgh(nls; show_trace, ffjm2_ensemble_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_ffjm2_ensemble, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_ffjm2_ensemble)): ERRO - $(sprint(showerror, e))")
+            end
+
+            try
+                resultado = testar_bfgs_backtracking_mgh(nls; order = backtracking_order, show_trace, bfgs_options...)
+                row = _mgh_csv_row(String(nome), n, m, x0, metodo_bfgs, resultado)
+                push!(rows, row)
+                _write_mgh_csv_row(io, row)
+            catch e
+                println("$(nome) ($(metodo_bfgs)): ERRO - $(sprint(showerror, e))")
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação MGH (ffjm2_ensemble vs $(metodo_bfgs)) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_ffjm2_trio_mgh(; nomes=MGH_PROBLEM_NAMES,
+                               output="results/comparacao_ffjm2_trio_mgh.csv",
+                               update=:bfgs, backtracking_order=2,
+                               ffjm2_options=(;), ffjm2_trust_options=(;),
+                               bfgs_options=(;), show_trace=false)
+
+Roda, para cada problema MGH em `nomes`, [`ffjm2`](@ref) (busca linear de
+Armijo), [`ffjm2_trust`](@ref) (região de confiança) e
+`Optim.BFGS(linesearch=LineSearches.BackTracking(order=backtracking_order))`,
+salvando três linhas por problema em `output` (CSV) — igual a
+`comparar_ffjm2_bfgs_mgh` e `comparar_ffjm2_trust_bfgs_mgh` juntas, mas
+resolvendo o BFGS de referência uma única vez por problema em vez de duas.
+Um problema que lançar exceção em um dos três métodos é reportado e pulado
+sem impedir a linha dos outros dois nem interromper o laço.
+"""
+function comparar_ffjm2_trio_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_trio_mgh.csv",
+    update::Symbol = :bfgs,
+    backtracking_order::Integer = 2,
+    ffjm2_options = (;),
+    ffjm2_trust_options = (;),
+    bfgs_options = (;),
+    show_trace::Bool = false,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    metodo_ffjm2 = "ffjm2_" * String(update)
+    metodo_ffjm2_trust = "ffjm2_trust_" * String(update)
+    metodo_bfgs = "bfgs_backtracking$(backtracking_order)"
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            for (metodo, testar) in (
+                (metodo_ffjm2, nls -> testar_ffjm2_mgh(nls; update, show_trace, ffjm2_options...)),
+                (metodo_ffjm2_trust, nls -> testar_ffjm2_trust_mgh(nls; update, show_trace, ffjm2_trust_options...)),
+                (metodo_bfgs, nls -> testar_bfgs_backtracking_mgh(nls; order = backtracking_order, show_trace, bfgs_options...)),
+            )
+                try
+                    resultado = testar(nls)
+                    row = _mgh_csv_row(String(nome), n, m, x0, metodo, resultado)
+                    push!(rows, row)
+                    _write_mgh_csv_row(io, row)
+                catch e
+                    println("$(nome) ($(metodo)): ERRO - $(sprint(showerror, e))")
+                end
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação MGH (ffjm2 vs ffjm2_trust vs $(metodo_bfgs)) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_ffjm2_quarteto_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                   output="results/comparacao_ffjm2_quarteto_mgh.csv",
+                                   update=:bfgs, backtracking_order=2,
+                                   ffjm2_options=(;), ffjm2_trust_options=(;),
+                                   ffjm2_box_options=(;), bfgs_options=(;),
+                                   show_trace=false)
+
+Igual a [`comparar_ffjm2_trio_mgh`](@ref), mas roda quatro métodos por
+problema MGH em `nomes`: [`ffjm2`](@ref) (Armijo + condição (2)),
+[`ffjm2_trust`](@ref) (região de confiança clássica com teste de razão),
+[`ffjm2_box`](@ref) (subproblema em caixa `Δₖ = max(‖sₖ₋₁‖,
+trust_region_floor)`, globalização por Armijo + condição (2)) e
+`Optim.BFGS(linesearch=LineSearches.BackTracking(order=backtracking_order))`,
+salvando uma linha por método em `output` (CSV). Um problema que lançar
+exceção em um dos quatro métodos é reportado e pulado sem impedir a linha
+dos outros nem interromper o laço.
+"""
+function comparar_ffjm2_quarteto_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_quarteto_mgh.csv",
+    update::Symbol = :bfgs,
+    backtracking_order::Integer = 2,
+    ffjm2_options = (;),
+    ffjm2_trust_options = (;),
+    ffjm2_box_options = (;),
+    bfgs_options = (;),
+    show_trace::Bool = false,
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    metodo_ffjm2 = "ffjm2_" * String(update)
+    metodo_ffjm2_trust = "ffjm2_trust_" * String(update)
+    metodo_ffjm2_box = "ffjm2_box_" * String(update)
+    metodo_bfgs = "bfgs_backtracking$(backtracking_order)"
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            for (metodo, testar) in (
+                (metodo_ffjm2, nls -> testar_ffjm2_mgh(nls; update, show_trace, ffjm2_options...)),
+                (metodo_ffjm2_trust, nls -> testar_ffjm2_trust_mgh(nls; update, show_trace, ffjm2_trust_options...)),
+                (metodo_ffjm2_box, nls -> testar_ffjm2_box_mgh(nls; update, show_trace, ffjm2_box_options...)),
+                (metodo_bfgs, nls -> testar_bfgs_backtracking_mgh(nls; order = backtracking_order, show_trace, bfgs_options...)),
+            )
+                try
+                    resultado = testar(nls)
+                    row = _mgh_csv_row(String(nome), n, m, x0, metodo, resultado)
+                    push!(rows, row)
+                    _write_mgh_csv_row(io, row)
+                catch e
+                    println("$(nome) ($(metodo)): ERRO - $(sprint(showerror, e))")
+                end
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação MGH (ffjm2 vs ffjm2_trust vs ffjm2_box vs $(metodo_bfgs)) salva em: $output")
     return (; rows, output)
 end

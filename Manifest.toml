@@ -2,7 +2,7 @@
 
 julia_version = "1.10.11"
 manifest_format = "2.0"
-project_hash = "76ca27227d0d80a1e57873bbcee6f7aef38fbc55"
+project_hash = "60a36a94a1eabf261aedc047b7451ece8730d252"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -144,6 +144,18 @@ version = "1.0.9+0"
 git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
 uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
 version = "0.5.0"
+
+[[deps.CUTEst]]
+deps = ["CUTEst_jll", "DataStructures", "JSON", "LazyArtifacts", "Libdl", "LinearAlgebra", "NLPModels", "Printf", "Quadmath", "REPL", "SIFDecode_jll", "SparseArrays"]
+git-tree-sha1 = "9823310e80fe8f8fc206c2248cc6e15b2d4806ef"
+uuid = "1b53aba6-35b6-5f92-a507-53c67d53f819"
+version = "1.4.0"
+
+[[deps.CUTEst_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "ab1258903890c92605038de3fe9c6536c55fd1b8"
+uuid = "bb5f6f25-f23d-57fd-8f90-3ef7bad1d825"
+version = "2.7.0+0"
 
 [[deps.Cairo_jll]]
 deps = ["Artifacts", "Bzip2_jll", "CompilerSupportLibraries_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "JLLWrappers", "Libdl", "Pixman_jll", "Xorg_libXext_jll", "Xorg_libXrender_jll", "Zlib_jll", "libpng_jll"]
@@ -726,9 +738,9 @@ version = "3.1.5+0"
 
 [[deps.JuMP]]
 deps = ["LinearAlgebra", "MacroTools", "MathOptInterface", "MutableArithmetics", "OrderedCollections", "PrecompileTools", "Printf", "SparseArrays"]
-git-tree-sha1 = "614b22ff014355192982b1f9a12c61298ce6a908"
+git-tree-sha1 = "4f27b21df3b47e8c08a83ead049afb621b2f5b3c"
 uuid = "4076af6c-e467-56ae-b986-b466b2749572"
-version = "1.31.1"
+version = "1.31.2"
 
     [deps.JuMP.extensions]
     JuMPDimensionalDataExt = "DimensionalData"
@@ -800,6 +812,10 @@ version = "0.16.10"
     SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
     SymEngine = "123dc426-2d89-5057-bbad-38513e3affd8"
     tectonic_jll = "d7dd28d6-a5e6-559c-9131-7eb760cdacc5"
+
+[[deps.LazyArtifacts]]
+deps = ["Artifacts", "Pkg"]
+uuid = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
 
 [[deps.LibCURL]]
 deps = ["LibCURL_jll", "MozillaCACerts_jll"]
@@ -1346,6 +1362,16 @@ version = "2.11.3"
     [deps.QuadGK.weakdeps]
     Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
 
+[[deps.Quadmath]]
+deps = ["Compat", "Printf", "Random"]
+git-tree-sha1 = "fc861299ef1c23d1985de276b2233db4a980a55c"
+uuid = "be4d8f0f-7fa4-5f49-b795-2f01399ab2dd"
+version = "1.1.0"
+weakdeps = ["SpecialFunctions"]
+
+    [deps.Quadmath.extensions]
+    QuadmathSpecialFunctionsExt = ["SpecialFunctions"]
+
 [[deps.REPL]]
 deps = ["InteractiveUtils", "Markdown", "Sockets", "Unicode"]
 uuid = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
@@ -1454,6 +1480,12 @@ version = "0.5.24"
 [[deps.SHA]]
 uuid = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 version = "0.7.0"
+
+[[deps.SIFDecode_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "a2f0082e13129198c52083430572cb790ac31297"
+uuid = "54dcf436-342f-53ea-8005-3708a1ae6c8c"
+version = "3.1.1+0"
 
 [[deps.SPRAL_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "Libdl", "METIS_jll", "libblastrampoline_jll"]

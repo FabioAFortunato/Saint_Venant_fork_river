@@ -96,14 +96,42 @@ end
 
 Minimiza `1/2 * ||F(x)||²` pelo método descrito em (19)--(21) do
 documento `teste1.pdf`. Uma matriz `H[i]` aproxima a Hessiana de cada
-componente `F(x)[i]`; `update` pode ser `:bfgs` ou `:sr1`.
+componente `F(x)[i]`; `update` aceita `:bfgs`, `:sr1`, e os mesmos três
+modelos extras de [`ffjm2_box`](@ref) (ver `_ffjm2_update!` para a
+derivação de cada fórmula):
+
+  * `:is_bfgs` — BFGS auto-escalado com teste de intervalo de Lukšan &
+    Spedicato (2000, `_research/IS_BFGS.pdf`); `gamma_bar` (padrão `10.0`)
+    controla o intervalo de escala.
+  * `:dw_model` — atualização da classe Broyden do Teorema 4.5(iii) de
+    Dennis & Wolkowicz (1993, `_research/DW_model.pdf`).
+  * `:is_dw_model` — combina os dois: mesmo `γ` do `:is_bfgs` aplicado à
+    parte herdada do BFGS dentro do `:dw_model`.
+  * `:psb` — Powell-Symmetric-Broyden (Powell, 1970), não preserva
+    definição positiva (assim como `:sr1`).
+
+Se `initial_scaling` for `true` (padrão `false`), a primeiríssima atualização
+de cada `H[i]` (na transição `k=0→k=1`) parte de `α₀·I` em vez de zero, com
+`α₀ = ‖s₀‖/‖g₀‖` (o passo aceito na iteração 0 dividido pela norma do
+gradiente nesse ponto — como `p=-g` em `k=0`, isso recupera exatamente o
+comprimento de passo escalar usado, análogo ao `α₀` de Shanno & Phua, 1978,
+`_research/initial_scale.pdf`, eq. (10): `Ĥ₀=α₀H₀`). Diferente do artigo
+original (que escala `H₀=I`), aqui não há `H₀` não-trivial para escalar —
+`H[i]` começa em zero — então a escala substitui o zero por `α₀·I` só nessa
+primeira atualização; da segunda em diante, a fórmula comum de sempre.
+
 Cada subproblema do modelo é formulado diretamente na direção `d` e resolvido
 por Ipopt com estratégia multi-start. O primeiro ponto inicial é o vetor nulo e
 os demais são perturbações gaussianas reprodutíveis ao redor dele.
 O Ipopt recebe a Hessiana exata do modelo do subproblema, construída a partir
 das aproximações `H[i]` mantidas pelo método externo.
 O minimizador do modelo (19) é diretamente a direção externa `dₖ` e deve
-satisfazer a condição (2); caso contrário, usa-se `-∇f(xₖ)`.
+satisfazer a condição (2); caso contrário, usa-se `-∇f(xₖ)` (pseudocódigo da
+Seção 4). Se `heavy_ball_beta` não for `nothing`, antes de cair em `-∇f(xₖ)`
+puro tenta-se a direção da bola pesada `-∇f(xₖ) + heavy_ball_beta*sₖ₋₁`
+(`sₖ₋₁` = passo aceito na iteração anterior), que também precisa satisfazer a
+condição (2); é uma extensão fora do artigo, desligada por padrão
+(`heavy_ball_beta = nothing` preserva o método exatamente como descrito).
 Como esta interface não recebe um conjunto proibido `P`, a busca linear
 corresponde ao caso `P = ∅`, com `t_first = 1`.
 
@@ -122,8 +150,10 @@ O retorno é um `NamedTuple` com os campos `minimizer`, `minimum`,
 `execution_time_seconds`, `function_evaluations`, `gradient_evaluations`,
 `function_evaluation_time_seconds`, `gradient_evaluation_time_seconds`,
 `total_function_evaluation_time_seconds`,
-`total_gradient_evaluation_time_seconds` e `rejected_directions`. Os campos
-de tempo sem o prefixo `total_` representam o custo médio de uma chamada.
+`total_gradient_evaluation_time_seconds`, `rejected_directions` e
+`heavy_ball_used` (quantas vezes a direção da bola pesada foi de fato aceita).
+Os campos de tempo sem o prefixo `total_` representam o custo médio de uma
+chamada.
 """
 
 function ffjm2(
@@ -138,13 +168,17 @@ function ffjm2(
     f_rel_tol::Union{Nothing,Real} = 0.0,
     model_maxiter::Integer = 1000,
     model_g_tol::Real = 1e-6,
-    model_multistart::Integer = 1000,
+    model_multistart::Integer = 10,
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
     model_solver::Symbol = :ipopt,
     direction_theta::Real = 1e-4,
     direction_beta::Real = 1e-8,
     direction_delta::Real = Inf,
+    #heavy_ball_beta::Union{Nothing,Real} = nothing,
+    heavy_ball_beta = 0.1,
+    gamma_bar::Real = 10.0,
+    initial_scaling::Bool = false,
     update_tol::Real = sqrt(eps(Float64)),
     linesearch = LineSearches.BackTracking(order = 3),
     callback = nothing,
@@ -154,8 +188,9 @@ function ffjm2(
     # 2.1. Validação dos parâmetros
     # --------------------------------------------------------------------------
     start_time_ns = time_ns()
-    update in (:bfgs, :sr1) ||
-        throw(ArgumentError("update deve ser :bfgs ou :sr1"))
+    update in (:bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model, :psb) ||
+        throw(ArgumentError("update deve ser :bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model ou :psb"))
+    gamma_bar > 1 || throw(ArgumentError("gamma_bar deve ser maior que 1"))
     model_solver in (:ipopt, :bfgs, :bobyqa, :mads) ||
         throw(ArgumentError("model_solver deve ser :ipopt, :bfgs, :bobyqa ou :mads"))
     maxiter >= 0 || throw(ArgumentError("maxiter deve ser não negativo"))
@@ -169,6 +204,8 @@ function ffjm2(
         throw(ArgumentError("direction_beta deve ser positivo"))
     direction_delta > 0 ||
         throw(ArgumentError("direction_delta deve ser positivo"))
+    heavy_ball_beta === nothing || (isfinite(heavy_ball_beta) && heavy_ball_beta >= 0) ||
+        throw(ArgumentError("heavy_ball_beta deve ser nothing ou não negativo"))
 
     # --------------------------------------------------------------------------
     # 2.2. Resíduos e Jacobiana no ponto inicial
@@ -252,6 +289,9 @@ function ffjm2(
     last_backtrackings = 0
     last_direction_rejected = false
     last_direction_norm = zero(T)
+    last_direction_source = :model
+    heavy_ball_used = 0
+    previous_step = nothing
 
     # --------------------------------------------------------------------------
     # 2.3. Laço principal do método externo
@@ -265,7 +305,8 @@ function ffjm2(
                 "ffjm2 ($(uppercase(string(update)))) iter $k: ",
                 "f = $f, RMSD = $residual_rms, ",
                 "α = $last_alpha, backtrackings = $last_backtrackings, ",
-                "direção rejeitada = $last_direction_rejected",
+                "direção rejeitada = $last_direction_rejected, ",
+                "fonte da direção = $last_direction_source",
             )
         end
         state = (; iteration = k, x = copy(x), value = f, residual = copy(r),
@@ -273,7 +314,8 @@ function ffjm2(
                  alpha = k == 0 ? nothing : last_alpha,
                  backtrackings = k == 0 ? 0 : last_backtrackings,
                  direction_rejected = k == 0 ? false : last_direction_rejected,
-                 direction_norm = k == 0 ? nothing : last_direction_norm)
+                 direction_norm = k == 0 ? nothing : last_direction_norm,
+                 direction_source = last_direction_source)
         if callback !== nothing && callback(state) === true
             status = :callback
             iterations = k
@@ -296,6 +338,7 @@ function ffjm2(
 
         # 2.3.2. Direção: gradiente negativo em k=0; modelo quártico para k>0.
         model_result = nothing
+        direction_source = k == 0 ? :gradient : :model
         if k == 0
             p = -g
         else
@@ -303,7 +346,7 @@ function ffjm2(
                 r,
                 J,
                 H,
-                g,
+                last_direction_norm,
                 model_maxiter,
                 model_g_tol,
                 model_multistart,
@@ -318,17 +361,30 @@ function ffjm2(
         end
 
         # 2.3.3. Aceitação da direção pela condição (2) do Algoritmo 2.1.
-        pnorm = norm(p)
         gnorm = norm(g)
-        direction_rejected = !all(isfinite, p) || !(
-            dot(g, p) <= -direction_theta * pnorm^2 * gnorm^2 &&
-            direction_beta * gnorm <= pnorm <= direction_delta
-        )
+        direction_valid(d, dn) = all(isfinite, d) &&
+            dot(g, d) <= -direction_theta * dn^2 * gnorm^2 &&
+            direction_beta * gnorm <= dn <= direction_delta
+        direction_rejected = !direction_valid(p, norm(p))
         if direction_rejected
             rejected_directions += 1
             p = -g
+            direction_source = :gradient
+            # Extensão fora do artigo: em vez de aceitar -g cegamente (como no
+            # pseudocódigo da Seção 4), tenta antes a direção da bola pesada
+            # (-g + β·passo_anterior), que também precisa satisfazer a
+            # condição (2) — se falhar, cai em -g puro exatamente como antes.
+            if heavy_ball_beta !== nothing && previous_step !== nothing
+                d_heavy_ball = p .+ heavy_ball_beta .* previous_step
+                if direction_valid(d_heavy_ball, norm(d_heavy_ball))
+                    p = d_heavy_ball
+                    direction_source = :heavy_ball
+                    heavy_ball_used += 1
+                end
+            end
         end
         last_direction_rejected = direction_rejected
+        last_direction_source = direction_source
         last_direction_norm = norm(p)
 
         # 2.3.4. Busca linear de Armijo na função objetivo verdadeira.
@@ -383,7 +439,14 @@ function ffjm2(
         # 2.3.6. Atualização das Hessianas individuais e do estado externo.
         Jnew = T.(jac(xnew))
         s = xnew - x
-        _ffjm2_update!(H, s, Jnew, J, update, update_tol)
+        if initial_scaling && k == 0
+            alpha0 = norm(s) / gnorm
+            for Hi in H
+                Hi .= alpha0 .* Matrix{T}(I, n, n)
+            end
+        end
+        _ffjm2_update!(H, s, Jnew, J, update, update_tol, gamma_bar)
+        previous_step = s
 
         fold = f
         x, r, J, f = xnew, rnew, Jnew, T(fnew)
@@ -432,6 +495,7 @@ function ffjm2(
         total_function_evaluation_time_seconds,
         total_gradient_evaluation_time_seconds,
         rejected_directions,
+        heavy_ball_used,
         alphas,
         model_solver,
         model_solves,
@@ -444,10 +508,24 @@ end
 # 3. Atualização quase-Newton das Hessianas dos resíduos
 #
 # Para cada resíduo f_i, H[i] aproxima ∇²f_i. A atualização utiliza
-# s = x_{k+1} - x_k e y_i = ∇f_i(x_{k+1}) - ∇f_i(x_k).
+# s = x_{k+1} - x_k e y_i = ∇f_i(x_{k+1}) - ∇f_i(x_k). `update` pode ser
+# `:bfgs`, `:sr1`, ou os mesmos três modelos extras de `ffjm2_box.jl`
+# (ver `_ffjm2_box_update!` lá para a derivação completa de cada fórmula):
+#
+#   * `:is_bfgs` — BFGS auto-escalado com teste de intervalo (Lukšan &
+#     Spedicato, 2000, `_research/IS_BFGS.pdf`).
+#   * `:dw_model` — atualização da classe Broyden do Teorema 4.5(iii) de
+#     Dennis & Wolkowicz (1993, `_research/DW_model.pdf`).
+#   * `:is_dw_model` — combinação dos dois acima.
+#   * `:psb` — Powell-Symmetric-Broyden (Powell, 1970).
+#
+# `gamma_bar` só é usado por `:is_bfgs`/`:is_dw_model`; tem um valor padrão
+# para não quebrar as chamadas antigas de 6 argumentos (`ffjm2_trust.jl`
+# reaproveita esta função, mas só permite `update ∈ {:bfgs, :sr1}`, então
+# nunca aciona os ramos novos).
 # ==============================================================================
 
-function _ffjm2_update!(H, s, Jnew, Jold, update, tol)
+function _ffjm2_update!(H, s, Jnew, Jold, update, tol, gamma_bar = 10.0)
     ss = norm(s)
     for i in eachindex(H)
         Hi = H[i]
@@ -462,11 +540,66 @@ function _ffjm2_update!(H, s, Jnew, Jold, update, tol)
             if abs(sHs) > tol * max(one(sHs), ss * norm(Hs))
                 Hi .-= (Hs * Hs') / sHs
             end
-        else
+        elseif update === :sr1
             v = y - Hi * s
             vs = dot(v, s)
             if abs(vs) > tol * max(one(vs), norm(v) * ss)
                 Hi .+= (v * v') / vs
+            end
+        elseif update === :is_bfgs
+            sy = dot(s, y)
+            Bs = Hi * s
+            sBs = dot(s, Bs)
+            curvature_ok = abs(sy) > tol * max(one(sy), ss * norm(y))
+            if abs(sBs) > tol * max(one(sBs), ss * norm(Bs))
+                γ = curvature_ok ? sBs / sy : one(sBs)
+                inv_γ = (one(γ) / gamma_bar <= γ <= gamma_bar) ? one(γ) / γ : one(γ)
+                Hi .= inv_γ .* (Hi .- (Bs * Bs') ./ sBs)
+            end
+            if curvature_ok
+                Hi .+= (y * y') / sy
+            end
+        elseif update === :dw_model
+            sy = dot(s, y)
+            Bs = Hi * s
+            sBs = dot(s, Bs)
+            curvature_ok = abs(sy) > tol * max(one(sy), ss * norm(y))
+            correction_ok = abs(sBs) > tol * max(one(sBs), ss * norm(Bs))
+            if correction_ok
+                Hi .-= (Bs * Bs') ./ sBs
+            end
+            if curvature_ok
+                Hi .+= (y * y') ./ sy
+            end
+            if curvature_ok && correction_ok
+                w = y ./ sy .- Bs ./ sBs
+                Hi .+= sy .* (w * w')
+            end
+        elseif update === :is_dw_model
+            sy = dot(s, y)
+            Bs = Hi * s
+            sBs = dot(s, Bs)
+            curvature_ok = abs(sy) > tol * max(one(sy), ss * norm(y))
+            correction_ok = abs(sBs) > tol * max(one(sBs), ss * norm(Bs))
+            if correction_ok
+                γ = curvature_ok ? sBs / sy : one(sBs)
+                inv_γ = (one(γ) / gamma_bar <= γ <= gamma_bar) ? one(γ) / γ : one(γ)
+                Hi .= inv_γ .* (Hi .- (Bs * Bs') ./ sBs)
+            end
+            if curvature_ok
+                Hi .+= (y * y') ./ sy
+            end
+            if curvature_ok && correction_ok
+                w = y ./ sy .- Bs ./ sBs
+                Hi .+= sy .* (w * w')
+            end
+        else # :psb
+            Bs = Hi * s
+            resid = y .- Bs
+            if ss > tol * max(one(ss), ss)
+                s2 = ss^2
+                rs = dot(resid, s)
+                Hi .+= (resid * s' .+ s * resid') ./ s2 .- (rs / s2^2) .* (s * s')
             end
         end
         # Elimina assimetria de arredondamento acumulada.
@@ -567,7 +700,7 @@ function _ffjm2_model_direction(
     r,
     J,
     H,
-    g,
+    last_direction_norm,
     maxiter,
     g_tol,
     multistart,
@@ -577,7 +710,13 @@ function _ffjm2_model_direction(
 )
     # 6.1. Congela os dados do modelo construído na iteração externa k.
     n = size(J, 2)
-    start_spread = norm(g) # WARNING MUDEI AQUI. ESTOU TESTANDO
+    # Escala pelo último passo aceito (mesma unidade de d), com piso em
+    # `start_spread` para não colapsar a zero quando o passo anterior foi
+    # minúsculo (ex. por muito backtracking) sem o método ter de fato
+    # convergido. Usar ‖g‖ aqui misturava unidades (∂f/∂x vs. x) e explodia
+    # o raio de busca do Ipopt quando o gradiente externo ainda estava
+    # grande — ver mgh10 no histórico de testes.
+    start_spread = max(last_direction_norm, start_spread)
     evaluator = _FFJM2IpoptEvaluator(collect(r), Matrix(J), H)
     rng = MersenneTwister(seed)
     starts = Vector{Vector{eltype(r)}}(undef, Int(multistart))
@@ -1750,15 +1889,15 @@ function bfgs_puro_armijo(
                 " | direção rejeitada = ", !valid_direction,
             )
         end
-        if norm(s) <= x_tol * max(one(eltype(x)), norm(x))
-            status = :step_converged
-            break
-        end
-        if f_rel_tol !== nothing &&
-           abs(fold - f) <= f_rel_tol * max(one(f), abs(fold))
-            status = :function_converged
-            break
-        end
+        # if norm(s) <= x_tol * max(one(eltype(x)), norm(x))
+        #     status = :step_converged
+        #     break
+        # end
+        # if f_rel_tol !== nothing &&
+        #    abs(fold - f) <= f_rel_tol * max(one(f), abs(fold))
+        #     status = :function_converged
+        #     break
+        # end
     end
     if status == :maximum_iterations && norm(g) <= g_tol
         status = :gradient_converged
@@ -1936,7 +2075,8 @@ function comparar_solvers_subproblema_ffjm2(;
         throw(ArgumentError("model_multistarts deve conter apenas valores positivos"))
     !isempty(solvers) && all(s -> s in (:ipopt, :bfgs, :bobyqa, :mads), solvers) ||
         throw(ArgumentError("model_solvers contém um solver inválido"))
-    update in (:bfgs, :sr1) || throw(ArgumentError("update deve ser :bfgs ou :sr1"))
+    update in (:bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model, :psb) ||
+        throw(ArgumentError("update deve ser :bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model ou :psb"))
 
     csv_field(value) = begin
         text = value isa AbstractVector ? repr(collect(value)) : string(value)

@@ -1,0 +1,149 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{siunitx}
+
+\sisetup{
+    scientific-notation = true,
+    round-mode = figures,
+    round-precision = 3,
+    exponent-product = \times,
+}
+
+\title{Compara\c{c}\~ao FFJM2 (ensemble) vs.\ BFGS -- problemas MGH}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+Resumo dos 34 problemas de m\'inimos quadrados de Mor\'e--Garbow--Hillstrom
+(MGH), comparando \texttt{ffjm2\_ensemble} contra \texttt{bfgs\_backtracking2}
+(\texttt{results/comparacao\_ffjm2\_ensemble\_bfgs\_mgh.csv}). $f$ e
+$\|\nabla f\|$ s\~ao os valores finais devolvidos por cada m\'etodo; ``Aval.\
+$f$''/``Aval.\ $\nabla f$'' contam avalia\c{c}\~oes de fun\c{c}\~ao e de
+gradiente/Jacobiana; ``Crit\'erio'' \'e o motivo de parada.
+
+\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
+\toprule
+Problema & M\'etodo & {$f$} & {$\|\nabla f\|$} & {Aval.\ $f$} & {Aval.\ $\nabla f$} & Crit\'erio \\
+\midrule
+\endfirsthead
+\toprule
+Problema & M\'etodo & {$f$} & {$\|\nabla f\|$} & {Aval.\ $f$} & {Aval.\ $\nabla f$} & Crit\'erio \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\textit{continua na pr\'oxima p\'agina}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+MGH01 & FFJM2 (ensemble) & 1.4396711520283465e-29 & 4.533409173378307e-14 & 10 & 4 & gradiente \\
+MGH01 & BFGS (backtracking) & 1.9811212969866065e-22 & 3.687402878681231e-10 & 53 & 40 & gradiente \\
+\midrule
+MGH02 & FFJM2 (ensemble) & 24.492126839620013 & 8.422552577238651e-10 & 38 & 16 & gradiente \\
+MGH02 & BFGS (backtracking) & 1.1069296222061238e-26 & 2.198150974748396e-12 & 15 & 11 & gradiente \\
+\midrule
+MGH03 & FFJM2 (ensemble) & 6.763212254583784e-13 & 1.2916584376738925e-10 & 74 & 19 & gradiente \\
+MGH03 & BFGS (backtracking) & 5.053640174072107e-30 & 2.830752396078957e-10 & 233 & 174 & gradiente \\
+\midrule
+MGH04 & FFJM2 (ensemble) & 0.0 & 0.0 & 61 & 7 & res\'iduo \\
+MGH04 & BFGS (backtracking) & 9.860761315271616e-32 & 4.4408920985048613e-10 & 40 & 14 & gradiente \\
+\midrule
+MGH05 & FFJM2 (ensemble) & 1.644025384636575e-23 & 2.0530078129773803e-11 & 16 & 8 & gradiente \\
+MGH05 & BFGS (backtracking) & 2.500895342872257e-22 & 1.0795509381222512e-10 & 22 & 19 & gradiente \\
+\midrule
+MGH06 & FFJM2 (ensemble) & 1010.0 & 4.822745531992369e-24 & 10 & 2 & gradiente \\
+MGH06 & BFGS (backtracking) & 1010.0 & 1.161570550373405e-28 & 10 & 2 & gradiente \\
+\midrule
+MGH07 & FFJM2 (ensemble) & 1.9020679278861015e-25 & 1.1400018833019595e-11 & 21 & 9 & gradiente \\
+MGH07 & BFGS (backtracking) & 5.236320261563365e-19 & 5.028697146926833e-9 & 41 & 30 & gradiente \\
+\midrule
+MGH08 & FFJM2 (ensemble) & 0.004107438653289491 & 5.3658810483819695e-11 & 15 & 7 & gradiente \\
+MGH08 & BFGS (backtracking) & 0.004107438653289492 & 7.394161492709181e-10 & 34 & 28 & gradiente \\
+\midrule
+MGH09 & FFJM2 (ensemble) & 5.639663860655076e-9 & 1.3681608968256241e-9 & 6 & 3 & gradiente \\
+MGH09 & BFGS (backtracking) & 5.639663848431548e-9 & 1.5521307719980087e-9 & 6 & 5 & gradiente \\
+\midrule
+MGH10 & FFJM2 (ensemble) & 27850.77510687367 & 514.7388020571625 & 9135 & 1001 & m\'ax.\ iter. \\
+MGH10 & BFGS (backtracking) & 43.97292758504964 & 2.281500221901915 & 552 & 386 & passo \\
+\midrule
+MGH11 & FFJM2 (ensemble) & 7.05707520530799e-17 & 3.207234647155468e-9 & 40 & 17 & gradiente \\
+MGH11 & BFGS (backtracking) & 2.268388028358867e-20 & 7.169397077368946e-10 & 50 & 42 & gradiente \\
+\midrule
+MGH12 & FFJM2 (ensemble) & 3.002277672322236e-21 & 1.6544360218667573e-12 & 23 & 11 & gradiente \\
+MGH12 & BFGS (backtracking) & 1.5797638860152974e-21 & 3.202002460898708e-11 & 53 & 41 & gradiente \\
+\midrule
+MGH13 & FFJM2 (ensemble) & 8.292460016080695e-13 & 4.647932194862923e-9 & 27 & 12 & gradiente \\
+MGH13 & BFGS (backtracking) & 1.5664898045692352e-14 & 3.6077857126618616e-9 & 55 & 45 & gradiente \\
+\midrule
+MGH14 & FFJM2 (ensemble) & 1.0538688655686955e-30 & 2.3758316914912085e-14 & 15 & 4 & gradiente \\
+MGH14 & BFGS (backtracking) & 3.5215347722240323e-22 & 5.460932614607619e-10 & 44 & 31 & gradiente \\
+\midrule
+MGH15 & FFJM2 (ensemble) & 0.00015375280192461954 & 6.052428324114688e-11 & 68 & 20 & gradiente \\
+MGH15 & BFGS (backtracking) & 0.00015375280192461875 & 4.1328610828486283e-10 & 39 & 33 & gradiente \\
+\midrule
+MGH16 & FFJM2 (ensemble) & 42911.100813178244 & 0.0006965165858471371 & 1090 & 132 & fun\c{c}\~ao \\
+MGH16 & BFGS (backtracking) & 42911.10081317813 & 2.831466234757188e-5 & 72 & 26 & fun\c{c}\~ao \\
+\midrule
+MGH17 & FFJM2 (ensemble) & 2.732447348742718e-5 & 2.1936559241083746e-9 & 39 & 14 & gradiente \\
+MGH17 & BFGS (backtracking) & 2.7324473487415025e-5 & 8.22766944545086e-9 & 90 & 59 & gradiente \\
+\midrule
+MGH18 & FFJM2 (ensemble) & 3.053155393117086e-17 & 1.6988670832190502e-11 & 82 & 30 & gradiente \\
+MGH18 & BFGS (backtracking) & 0.0028278249627500095 & 1.2767277303440512e-8 & 44 & 41 & gradiente \\
+\midrule
+MGH19 & FFJM2 (ensemble) & 0.043835560873219194 & 1.181613619907523e-7 & 202 & 53 & fun\c{c}\~ao \\
+MGH19 & BFGS (backtracking) & 0.13737733322905482 & 8.291793370574357e-10 & 147 & 113 & gradiente \\
+\midrule
+MGH20 & FFJM2 (ensemble) & 0.001143835026776229 & 1.1604954568405122e-9 & 15 & 6 & gradiente \\
+MGH20 & BFGS (backtracking) & 0.001143835026776227 & 7.070265396972292e-9 & 49 & 39 & gradiente \\
+\midrule
+MGH21 & FFJM2 (ensemble) & 1.7166510998275967e-16 & 8.287603643849229e-9 & 8 & 3 & gradiente \\
+MGH21 & BFGS (backtracking) & 4.792660525704391e-18 & 1.4958338545043611e-9 & 228 & 150 & gradiente \\
+\midrule
+MGH22 & FFJM2 (ensemble) & 7.62183759425066e-14 & 9.110568941968628e-9 & 32 & 11 & gradiente \\
+MGH22 & BFGS (backtracking) & 1.6533673492449174e-13 & 1.5617134313730746e-8 & 136 & 112 & gradiente \\
+\midrule
+MGH23 & FFJM2 (ensemble) & 1.124988752995326e-5 & 7.917222121667265e-9 & 14 & 6 & gradiente \\
+MGH23 & BFGS (backtracking) & 1.1249887504649548e-5 & 1.2053310757901526e-8 & 87 & 68 & gradiente \\
+\midrule
+MGH24 & FFJM2 (ensemble) & 1.7284107854280416e-6 & 8.601369710783445e-9 & 44 & 18 & gradiente \\
+MGH24 & BFGS (backtracking) & 1.728410781798749e-6 & 6.288296516355331e-9 & 588 & 450 & gradiente \\
+\midrule
+MGH25 & FFJM2 (ensemble) & 0.0 & 0.0 & 52 & 6 & res\'iduo \\
+MGH25 & BFGS (backtracking) & 6.843629662967132e-26 & 7.2686179088993185e-12 & 23 & 16 & gradiente \\
+\midrule
+MGH26 & FFJM2 (ensemble) & 1.1909305988708278e-24 & 1.4697999415677417e-12 & 19 & 8 & gradiente \\
+MGH26 & BFGS (backtracking) & 1.3975280609633234e-5 & 1.1063616173351522e-8 & 36 & 34 & gradiente \\
+\midrule
+MGH27 & FFJM2 (ensemble) & 9.796030569475736e-24 & 3.635489113531932e-13 & 21 & 9 & gradiente \\
+MGH27 & BFGS (backtracking) & 5.734696633693305e-20 & 3.6898775107620554e-9 & 20 & 17 & gradiente \\
+\midrule
+MGH28 & FFJM2 (ensemble) & 1.2244709108860364e-17 & 5.835667569249686e-10 & 8 & 4 & gradiente \\
+MGH28 & BFGS (backtracking) & 2.5338281178952867e-16 & 1.0863485608159909e-8 & 26 & 18 & gradiente \\
+\midrule
+MGH29 & FFJM2 (ensemble) & 1.0706851553516989e-23 & 5.947712426197822e-12 & 7 & 4 & gradiente \\
+MGH29 & BFGS (backtracking) & 9.104593422385946e-19 & 1.5632960060448564e-9 & 8 & 8 & gradiente \\
+\midrule
+MGH30 & FFJM2 (ensemble) & 9.367723249499515e-31 & 8.699221938329399e-15 & 9 & 4 & gradiente \\
+MGH30 & BFGS (backtracking) & 1.9655441497253108e-19 & 4.026641021229466e-9 & 46 & 23 & gradiente \\
+\midrule
+MGH31 & FFJM2 (ensemble) & 1.34010996036416 & 5.305444393270339e-6 & 194 & 42 & fun\c{c}\~ao \\
+MGH31 & BFGS (backtracking) & 1.340109960363068 & 4.482312419926441e-9 & 78 & 43 & gradiente \\
+\midrule
+MGH32 & FFJM2 (ensemble) & 5.000000000000002 & 3.8459253727671276e-16 & 3 & 2 & gradiente \\
+MGH32 & BFGS (backtracking) & 4.999999999999999 & 5.57880165459373e-16 & 2 & 2 & gradiente \\
+\midrule
+MGH33 & FFJM2 (ensemble) & 2.317073170731697 & 5.2597881952492406e-5 & 104 & 13 & fun\c{c}\~ao \\
+MGH33 & BFGS (backtracking) & 2.317073170731707 & 1.4236318842335372e-10 & 13 & 5 & gradiente \\
+\midrule
+MGH34 & FFJM2 (ensemble) & 3.0675675675675786 & 3.762948807067008e-10 & 9 & 2 & gradiente \\
+MGH34 & BFGS (backtracking) & 3.067567567567566 & 2.1343520094965422e-10 & 9 & 2 & gradiente \\
+\end{longtable}
+
+\end{document}
