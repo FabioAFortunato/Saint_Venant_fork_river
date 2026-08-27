@@ -1,0 +1,324 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{graphicx}
+
+\sisetup{
+    scientific-notation = true,
+    round-mode = figures,
+    round-precision = 3,
+    exponent-product = \times,
+}
+
+\title{FFJM2 vs.\ BFGS on the MGH Problems}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+FFJM2 minimizes $\frac{1}{2}\|F(x)\|^2$ with a local quartic model of the
+residuals instead of a line search. At iteration $k$, the step $d$ solves
+\[
+    M_k(d) = \mu\|d\|^2 + \frac{1}{2}\sum_i q_i(d)^2, \qquad
+    q_i(d) = r_i + J_i d + \frac{1}{2} d^\top H_i d,
+\]
+where $r_i$ and $J_i$ are the $i$-th residual and its Jacobian row at
+$x_k$, $H_i$ is the current approximation to the Hessian of that residual
+component, and $\mu\|d\|^2$ is a Levenberg-Marquardt penalty that damps the
+step in place of a line search. The candidate $x_k+d$ is accepted or
+rejected based on the ratio between the actual and the predicted reduction
+in $f$.
+
+The first iteration starts at
+$\mu = 1$. Each accepted step divides $\mu$ by a fixed factor $\mu_{grow} = 10$, with a floor
+$\mu_{\min} = 1^{-8}$, so $\mu$ keeps shrinking. Each rejected step instead
+multiplies $\mu$ by that same factor $\mu_{grow} = 10$ and re-solves the subproblem at the
+same point, until a step is accepted or $\mu$ reaches a ceiling
+$\mu_{\max} = 1^{12}$. Unlike a scheme that resets $\mu$ at the start of every
+iteration, this value always carries over from the previous one. This
+carryover performed better in practice than restarting $\mu$ from scratch
+each time.
+
+Every run reported below stops under one of three point-wise criteria,
+evaluated with the same default tolerances for \texttt{ffjm2} and for
+Optim.jl's \texttt{BFGS} \cite{Mogensen2018} (kept equal so the comparison
+is fair):
+\begin{itemize}
+    \item \textbf{Gradient}: the gradient norm reaches $\|\nabla f\| \le 10^{-8}$. This is a genuine first-order stationary point.
+    \item \textbf{Step}: the last step has (numerically) zero length. The solver stalls and stops making progress.
+    \item \textbf{Function}: the objective value does not change between two consecutive iterations. The iterate is stuck on a plateau.
+\end{itemize}
+A run that exhausts the iteration budget without meeting any of the three
+would be reported separately as \emph{not converged}, but no such case
+appears in the tables below; their ``Criterion'' column always reports one
+of the three above.
+
+Table~\ref{tab:hessian-models} compares the six ffjm2 Hessian-update
+models, each run independently on the 34 MGH least-squares problems
+\cite{MoreGarbowHillstrom1981}. Its ``Converged (gradient)'' column counts
+how many of the 34 problems stopped under the gradient criterion; the
+remaining columns are mean~$\pm$~standard deviation over the 34 problems.
+The models are plain BFGS and SR1, the Dennis-Wolkowicz update
+\cite{DennisWolkowicz1993} (DW) and its interval-scaled variant
+\cite{LuksanSpedicato2000} (IS+DW), interval-scaled BFGS
+\cite{LuksanSpedicato2000} (IS+BFGS), and Powell-Symmetric-Broyden
+\cite{Powell1970} (PSB).
+
+\begin{table}[htbp]
+\centering
+\caption{Comparison of the ffjm2 Hessian-update models on the 34 MGH problems.}
+\label{tab:hessian-models}
+\begin{tabular}{l r r r r r}
+\toprule
+Model & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals & Time (s) \\
+\midrule
+BFGS & 29/34 & $56.88 \pm 188.25$ & $99.97 \pm 351.85$ & $57.88 \pm 188.25$ & $2.071 \pm 6.121$ \\
+SR1 & 32/34 & $23.12 \pm 54.84$ & $44.32 \pm 112.92$ & $24.12 \pm 54.84$ & $0.934 \pm 2.992$ \\
+IS+BFGS & 29/34 & $44.00 \pm 170.39$ & $88.15 \pm 343.34$ & $45.00 \pm 170.39$ & $1.590 \pm 5.763$ \\
+DW & 29/34 & $56.12 \pm 181.91$ & $103.24 \pm 351.45$ & $57.12 \pm 181.91$ & $1.865 \pm 5.942$ \\
+IS+DW & 29/34 & $49.41 \pm 173.04$ & $93.74 \pm 344.17$ & $50.41 \pm 173.04$ & $1.768 \pm 5.923$ \\
+PSB & 31/34 & $15.68 \pm 22.53$ & $31.38 \pm 53.44$ & $16.68 \pm 22.53$ & $0.424 \pm 0.919$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent
+PSB and SR1 are the two best models: together they solve the most problems
+under the gradient criterion, and PSB in particular does so with by far the
+fewest iterations, evaluations, and execution time on average
+(Table~\ref{tab:hessian-models}). SR1 nonetheless certifies gradient
+convergence on one more problem than PSB (32/34 against 31/34). To see
+exactly where they disagree, Table~\ref{tab:psb-vs-sr1} isolates the three
+problems on which at least one of the two methods does not stop under the
+gradient criterion.
+
+\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
+\caption{FFJM2 (PSB) vs.\ FFJM2 (SR1): per-problem comparison on the MGH problems.}
+\label{tab:psb-vs-sr1} \\
+\toprule
+Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
+\midrule
+\endfirsthead
+\caption[]{(continued)} \\
+\toprule
+Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\textit{continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+MGH10 & FFJM2 (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & step \\
+MGH10 & FFJM2 (SR1) & 4.397293e+01 & 5.500886e-02 & 297 & 125 & step \\
+\midrule
+MGH16 & FFJM2 (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & function \\
+MGH16 & FFJM2 (SR1) & 4.291110e+04 & 6.255963e-05 & 44 & 9 & function \\
+\midrule
+MGH31 & FFJM2 (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & function \\
+MGH31 & FFJM2 (SR1) & 1.528639e+00 & 4.387102e-09 & 44 & 29 & gradient \\
+\end{longtable}
+
+\noindent
+On MGH10 and MGH16, neither model reaches the gradient criterion: both
+stall under the step and function criteria, respectively, at essentially
+the same objective value, although FFJM2 with PSB reaches a smaller
+gradient norm on MGH10. MGH31 is the one case that favors SR1 over PSB.
+SR1 certifies a small gradient norm ($\|\nabla f\| \approx 4.4\times
+10^{-9}$), while PSB stops one iteration earlier under the function
+criterion, even though both reach practically the same objective value
+($f \approx 1.5286$) and gradient norm. For this reason, PSB is the best
+choice between the two approaches when weighing cost against benefit.
+
+FFJM2 (PSB) uses persistent decaying $\mu$, a full Hessian reset on a bad
+ratio, and $-\nabla f$+Armijo at $k=0$ and as a safeguard. The following
+table compares it against BFGS with backtracking line search on the 34
+MGH least-squares problems.
+
+\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
+\caption{FFJM2 (PSB) vs.\ BFGS (backtracking): per-problem comparison on the MGH problems.}
+\label{tab:psb-vs-bfgs} \\
+\toprule
+Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
+\midrule
+\endfirsthead
+\caption[]{(continued)} \\
+\toprule
+Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
+\midrule
+\endhead
+\midrule
+\multicolumn{7}{r}{\textit{continued on next page}} \\
+\endfoot
+\bottomrule
+\endlastfoot
+MGH01 & FFJM2 (PSB) & 2.378118e-22 & 4.781998e-11 & 11 & 8 & gradient \\
+MGH01 & BFGS (backtracking) & 1.981121e-22 & 3.687403e-10 & 53 & 40 & gradient \\
+\midrule
+MGH02 & FFJM2 (PSB) & 5.096626e-18 & 3.844877e-09 & 9 & 7 & gradient \\
+MGH02 & BFGS (backtracking) & 1.106930e-26 & 2.198151e-12 & 15 & 11 & gradient \\
+\midrule
+MGH03 & FFJM2 (PSB) & 3.291139e-11 & 1.218349e-09 & 33 & 21 & gradient \\
+MGH03 & BFGS (backtracking) & 5.053640e-30 & 2.830752e-10 & 233 & 174 & gradient \\
+\midrule
+MGH04 & FFJM2 (PSB) & 3.811648e-17 & 8.733972e-09 & 9 & 8 & gradient \\
+MGH04 & BFGS (backtracking) & 9.860761e-32 & 4.440892e-10 & 40 & 14 & gradient \\
+\midrule
+MGH05 & FFJM2 (PSB) & 1.307196e-16 & 6.947100e-09 & 9 & 8 & gradient \\
+MGH05 & BFGS (backtracking) & 2.500895e-22 & 1.079551e-10 & 22 & 19 & gradient \\
+\midrule
+MGH06 & FFJM2 (PSB) & 1.010000e+03 & 1.161571e-28 & 10 & 2 & gradient \\
+MGH06 & BFGS (backtracking) & 1.010000e+03 & 1.161571e-28 & 10 & 2 & gradient \\
+\midrule
+MGH07 & FFJM2 (PSB) & 1.492230e-17 & 6.034493e-09 & 16 & 10 & gradient \\
+MGH07 & BFGS (backtracking) & 5.236320e-19 & 5.028697e-09 & 41 & 30 & gradient \\
+\midrule
+MGH08 & FFJM2 (PSB) & 4.107439e-03 & 1.646713e-09 & 11 & 9 & gradient \\
+MGH08 & BFGS (backtracking) & 4.107439e-03 & 7.394161e-10 & 34 & 28 & gradient \\
+\midrule
+MGH09 & FFJM2 (PSB) & 5.639664e-09 & 1.514425e-10 & 8 & 7 & gradient \\
+MGH09 & BFGS (backtracking) & 5.639664e-09 & 1.552131e-09 & 6 & 5 & gradient \\
+\midrule
+MGH10 & FFJM2 (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & step \\
+MGH10 & BFGS (backtracking) & 4.397293e+01 & 2.281500e+00 & 552 & 386 & step \\
+\midrule
+MGH11 & FFJM2 (PSB) & 3.731840e-20 & 5.344058e-10 & 25 & 17 & gradient \\
+MGH11 & BFGS (backtracking) & 2.268388e-20 & 7.169397e-10 & 50 & 42 & gradient \\
+\midrule
+MGH12 & FFJM2 (PSB) & 4.563399e-18 & 6.357891e-10 & 13 & 11 & gradient \\
+MGH12 & BFGS (backtracking) & 1.579764e-21 & 3.202002e-11 & 53 & 41 & gradient \\
+\midrule
+MGH13 & FFJM2 (PSB) & 1.526397e-14 & 6.452299e-09 & 14 & 11 & gradient \\
+MGH13 & BFGS (backtracking) & 1.566490e-14 & 3.607786e-09 & 55 & 45 & gradient \\
+\midrule
+MGH14 & FFJM2 (PSB) & 9.422925e-19 & 8.234343e-10 & 10 & 7 & gradient \\
+MGH14 & BFGS (backtracking) & 3.521535e-22 & 5.460933e-10 & 44 & 31 & gradient \\
+\midrule
+MGH15 & FFJM2 (PSB) & 1.537528e-04 & 9.059828e-09 & 37 & 22 & gradient \\
+MGH15 & BFGS (backtracking) & 1.537528e-04 & 4.132861e-10 & 39 & 33 & gradient \\
+\midrule
+MGH16 & FFJM2 (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & function \\
+MGH16 & BFGS (backtracking) & 4.291110e+04 & 2.831466e-05 & 72 & 26 & function \\
+\midrule
+MGH17 & FFJM2 (PSB) & 2.732447e-05 & 2.068003e-10 & 25 & 13 & gradient \\
+MGH17 & BFGS (backtracking) & 2.732447e-05 & 8.227669e-09 & 90 & 59 & gradient \\
+\midrule
+MGH18 & FFJM2 (PSB) & 1.848966e-17 & 1.580619e-09 & 79 & 45 & gradient \\
+MGH18 & BFGS (backtracking) & 2.827825e-03 & 1.276728e-08 & 44 & 41 & gradient \\
+\midrule
+MGH19 & FFJM2 (PSB) & 4.383556e-02 & 1.416675e-09 & 100 & 51 & gradient \\
+MGH19 & BFGS (backtracking) & 1.373773e-01 & 8.291793e-10 & 147 & 113 & gradient \\
+\midrule
+MGH20 & FFJM2 (PSB) & 1.143835e-03 & 1.245663e-09 & 12 & 10 & gradient \\
+MGH20 & BFGS (backtracking) & 1.143835e-03 & 7.070265e-09 & 49 & 39 & gradient \\
+\midrule
+MGH21 & FFJM2 (PSB) & 2.039200e-17 & 7.094164e-09 & 11 & 8 & gradient \\
+MGH21 & BFGS (backtracking) & 4.792661e-18 & 1.495834e-09 & 228 & 150 & gradient \\
+\midrule
+MGH22 & FFJM2 (PSB) & 1.538895e-14 & 2.985287e-09 & 13 & 10 & gradient \\
+MGH22 & BFGS (backtracking) & 1.653367e-13 & 1.561713e-08 & 136 & 112 & gradient \\
+\midrule
+MGH23 & FFJM2 (PSB) & 1.124989e-05 & 1.081072e-09 & 18 & 13 & gradient \\
+MGH23 & BFGS (backtracking) & 1.124989e-05 & 1.205331e-08 & 87 & 68 & gradient \\
+\midrule
+MGH24 & FFJM2 (PSB) & 1.728411e-06 & 4.216254e-09 & 36 & 24 & gradient \\
+MGH24 & BFGS (backtracking) & 1.728411e-06 & 6.288297e-09 & 588 & 450 & gradient \\
+\midrule
+MGH25 & FFJM2 (PSB) & 2.381329e-25 & 1.355871e-11 & 12 & 6 & gradient \\
+MGH25 & BFGS (backtracking) & 6.843630e-26 & 7.268618e-12 & 23 & 16 & gradient \\
+\midrule
+MGH26 & FFJM2 (PSB) & 1.397528e-05 & 8.167910e-09 & 28 & 16 & gradient \\
+MGH26 & BFGS (backtracking) & 1.397528e-05 & 1.106362e-08 & 36 & 34 & gradient \\
+\midrule
+MGH27 & FFJM2 (PSB) & 2.929614e-16 & 3.871200e-09 & 10 & 8 & gradient \\
+MGH27 & BFGS (backtracking) & 5.734697e-20 & 3.689878e-09 & 20 & 17 & gradient \\
+\midrule
+MGH28 & FFJM2 (PSB) & 2.197183e-15 & 6.890984e-09 & 9 & 8 & gradient \\
+MGH28 & BFGS (backtracking) & 2.533828e-16 & 1.086349e-08 & 26 & 18 & gradient \\
+\midrule
+MGH29 & FFJM2 (PSB) & 1.294047e-22 & 2.043013e-11 & 7 & 7 & gradient \\
+MGH29 & BFGS (backtracking) & 9.104593e-19 & 1.563296e-09 & 8 & 8 & gradient \\
+\midrule
+MGH30 & FFJM2 (PSB) & 7.325674e-21 & 3.540684e-10 & 9 & 7 & gradient \\
+MGH30 & BFGS (backtracking) & 1.965544e-19 & 4.026641e-09 & 46 & 23 & gradient \\
+\midrule
+MGH31 & FFJM2 (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & function \\
+MGH31 & BFGS (backtracking) & 1.340110e+00 & 4.482312e-09 & 78 & 43 & gradient \\
+\midrule
+MGH32 & FFJM2 (PSB) & 5.000000e+00 & 3.845925e-16 & 2 & 2 & gradient \\
+MGH32 & BFGS (backtracking) & 5.000000e+00 & 5.578802e-16 & 2 & 2 & gradient \\
+\midrule
+MGH33 & FFJM2 (PSB) & 2.317073e+00 & 1.044266e-10 & 14 & 5 & gradient \\
+MGH33 & BFGS (backtracking) & 2.317073e+00 & 1.423632e-10 & 13 & 5 & gradient \\
+\midrule
+MGH34 & FFJM2 (PSB) & 3.067568e+00 & 1.552202e-10 & 8 & 2 & gradient \\
+MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & gradient \\
+\end{longtable}
+
+
+The boxplot below compares the performance of the two approaches. 
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{boxplot_ffjm2_bfgs.png}
+    \caption{Comparison of FFJM2 (PSB) vs.\ BFGS (backtracking) on the MGH
+        problems, restricted to runs where both methods converged by
+        gradient norm. Final
+        $f$ value, function evaluations, and gradient evaluations. Stars
+        indicate significance under the Mann-Whitney U test
+        \cite{MannWhitney1947} ($p < 0.05$:
+        {*}; $p < 0.01$: {**}; $p < 0.001$: {***}).}
+    \label{fig:boxplot-ffjm2-bfgs}
+\end{figure}
+
+As Figure~\ref{fig:boxplot-ffjm2-bfgs} shows, the objective function values
+are not very different between the two methods: the p-value confirms
+neither achieves a significantly better result. Function evaluations and
+gradient evaluations, however, are different, and the p-value confirms
+this difference is significant. FFJM2 therefore performs better than
+BFGS in this respect, reaching a comparable solution at a much lower cost.
+
+\begin{thebibliography}{9}
+
+\bibitem{DennisWolkowicz1993}
+J. E. Dennis, Jr. and H. Wolkowicz, \emph{Sizing and least-change secant
+methods}, SIAM J. Numer. Anal., 30 (1993), pp.~1291--1314.
+
+\bibitem{LuksanSpedicato2000}
+L. Luk\v{s}an and E. Spedicato, \emph{Variable metric methods for
+unconstrained optimization and nonlinear least squares}, J. Comput. Appl.
+Math., 124 (2000), pp.~61--95.
+
+\bibitem{MannWhitney1947}
+H. B. Mann and D. R. Whitney, \emph{On a test of whether one of two random
+variables is stochastically larger than the other}, Ann. Math. Statist.,
+18 (1947), pp.~50--60.
+
+\bibitem{Mogensen2018}
+P. K. Mogensen and A. N. Riseth, \emph{Optim: A mathematical optimization
+package for Julia}, J. Open Source Software, 3 (2018), p.~615.
+
+\bibitem{MoreGarbowHillstrom1981}
+J. J. Mor\'e, B. S. Garbow, and K. E. Hillstrom, \emph{Testing
+unconstrained optimization software}, ACM Trans. Math. Software, 7 (1981),
+pp.~17--41.
+
+\bibitem{Powell1970}
+M. J. D. Powell, \emph{A new algorithm for unconstrained optimization}, in
+Nonlinear Programming, J. B. Rosen, O. L. Mangasarian, and K. Ritter, eds.,
+Academic Press, New York, 1970, pp.~31--65.
+
+\end{thebibliography}
+
+
+
+
+
+\end{document}

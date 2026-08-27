@@ -80,25 +80,30 @@ function (linesearch::GeometricBackTracking)(
     ))
 end
 
+const FFJM2_ALL_MODELS = (:bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model, :psb)
+
 # ==============================================================================
 # 2. Método externo FFJM2
 #
 # Fluxo de uma iteração:
 #   (a) verifica convergência;
-#   (b) constrói e resolve o modelo quártico;
-#   (c) valida a direção pela condição (2) do artigo;
-#   (d) escolhe o tamanho do passo por Armijo;
-#   (e) atualiza as Hessianas individuais por BFGS ou SR1.
+#   (b) para cada modelo em `update` (um só, por padrão; ou vários, ver
+#       `FFJM2_ALL_MODELS`), constrói e resolve o modelo quártico amortecido
+#       por μ (regularização de Levenberg-Marquardt no lugar da busca linear
+#       de Armijo), e escolhe a direção de maior descida entre eles;
+#   (c) aceita x+d pela razão entre redução real e prevista; se rejeitado,
+#       aumenta μ e repete (b) com o subproblema mais amortecido;
+#   (d) atualiza as Hessianas de todos os modelos em `update` por BFGS/SR1/etc.
 # ==============================================================================
 
 """
     ffjm2(F, x0; update=:bfgs, jacobian=nothing, kwargs...)
 
-Minimiza `1/2 * ||F(x)||²` pelo método descrito em (19)--(21) do
-documento `teste1.pdf`. Uma matriz `H[i]` aproxima a Hessiana de cada
-componente `F(x)[i]`; `update` aceita `:bfgs`, `:sr1`, e os mesmos três
-modelos extras de [`ffjm2_box`](@ref) (ver `_ffjm2_update!` para a
-derivação de cada fórmula):
+Minimiza `1/2 * ||F(x)||²` por um modelo quártico local (19)--(21) do
+documento `teste1.pdf`, amortecido por regularização de Levenberg-Marquardt
+em vez de busca linear de Armijo. Uma matriz `H[i]` aproxima a Hessiana de
+cada componente `F(x)[i]`; `update` aceita `:bfgs`, `:sr1`, e os três modelos
+extras abaixo (ver `_ffjm2_update!` para a derivação de cada fórmula):
 
   * `:is_bfgs` — BFGS auto-escalado com teste de intervalo de Lukšan &
     Spedicato (2000, `_research/IS_BFGS.pdf`); `gamma_bar` (padrão `10.0`)
@@ -110,30 +115,82 @@ derivação de cada fórmula):
   * `:psb` — Powell-Symmetric-Broyden (Powell, 1970), não preserva
     definição positiva (assim como `:sr1`).
 
+`update` também aceita uma tupla de símbolos (ex. `update=FFJM2_ALL_MODELS`
+para usar os 6 de uma vez) — nesse caso mantém-se um conjunto de Hessianas
+`H[i]` em paralelo, uma por modelo. A cada iteração o subproblema quártico é
+resolvido uma vez por modelo (mesmo `μ` para todos), e a direção usada é a
+de maior descida entre as candidatas, ou seja, a que minimiza `∇f(xₖ)ᵀd`
+(mais negativa). O passo aceito atualiza todas as Hessianas, cada uma com
+sua própria fórmula, usando o mesmo par `(s, y)`. Custa aproximadamente
+`length(update)` vezes o tempo de subproblema de um único modelo por
+tentativa de `μ`. O retorno inclui `last_model_directions`
+(`Dict{Symbol}` com a última direção individual de cada modelo, antes da
+seleção) e `direction_source` (o modelo vencedor na última iteração aceita).
+
 Se `initial_scaling` for `true` (padrão `false`), a primeiríssima atualização
 de cada `H[i]` (na transição `k=0→k=1`) parte de `α₀·I` em vez de zero, com
-`α₀ = ‖s₀‖/‖g₀‖` (o passo aceito na iteração 0 dividido pela norma do
-gradiente nesse ponto — como `p=-g` em `k=0`, isso recupera exatamente o
-comprimento de passo escalar usado, análogo ao `α₀` de Shanno & Phua, 1978,
-`_research/initial_scale.pdf`, eq. (10): `Ĥ₀=α₀H₀`). Diferente do artigo
-original (que escala `H₀=I`), aqui não há `H₀` não-trivial para escalar —
-`H[i]` começa em zero — então a escala substitui o zero por `α₀·I` só nessa
-primeira atualização; da segunda em diante, a fórmula comum de sempre.
+`α₀ = ‖s₀‖/‖g₀‖` (ver Shanno & Phua, 1978, `_research/initial_scale.pdf`,
+eq. (10)).
 
-Cada subproblema do modelo é formulado diretamente na direção `d` e resolvido
-por Ipopt com estratégia multi-start. O primeiro ponto inicial é o vetor nulo e
-os demais são perturbações gaussianas reprodutíveis ao redor dele.
-O Ipopt recebe a Hessiana exata do modelo do subproblema, construída a partir
-das aproximações `H[i]` mantidas pelo método externo.
-O minimizador do modelo (19) é diretamente a direção externa `dₖ` e deve
-satisfazer a condição (2); caso contrário, usa-se `-∇f(xₖ)` (pseudocódigo da
-Seção 4). Se `heavy_ball_beta` não for `nothing`, antes de cair em `-∇f(xₖ)`
-puro tenta-se a direção da bola pesada `-∇f(xₖ) + heavy_ball_beta*sₖ₋₁`
-(`sₖ₋₁` = passo aceito na iteração anterior), que também precisa satisfazer a
-condição (2); é uma extensão fora do artigo, desligada por padrão
-(`heavy_ball_beta = nothing` preserva o método exatamente como descrito).
-Como esta interface não recebe um conjunto proibido `P`, a busca linear
-corresponde ao caso `P = ∅`, com `t_first = 1`.
+A cada iteração externa, o subproblema
+
+    Mₖ(d) = μ‖d‖² + 1/2 * Σᵢ qᵢ(d)²,   qᵢ(d) = rᵢ + Jᵢ·d + 1/2 d'Hᵢd
+
+é resolvido por Ipopt com estratégia multi-start (primeiro ponto inicial é o
+vetor nulo, os demais são perturbações gaussianas reprodutíveis ao redor
+dele), e o passo candidato é sempre `d` inteiro — não há busca linear; o
+tamanho efetivo do passo é controlado só por `μ`, não por um `α` escalar.
+O ponto `x+d` é aceito pela razão entre redução real e prevista
+
+    ρₖ = (f(xₖ) - f(xₖ+dₖ)) / (Mₖ(0) - Mₖ(dₖ))
+
+(usando só a parte `½Σqᵢ²` de `Mₖ`, sem o termo `μ‖d‖²`, que amortece o
+subproblema mas não faz parte do modelo de `f` propriamente dito). `μ`
+**persiste entre iterações externas**: a primeira iteração começa em
+`μ=mu_initial` (padrão `1.0`); cada iteração seguinte tenta primeiro o `μ`
+deixado pela anterior, em vez de reiniciar do zero. Se `ρₖ ≥ ratio_eta1`, o
+passo é aceito e `μ` decresce (dividido por `mu_grow`, com piso `mu_min`)
+para servir de ponto de partida à próxima iteração — comportamento
+observado como melhor empiricamente do que reiniciar `μ=0` a cada iteração.
+Caso contrário, `μ` é multiplicado por `mu_grow` e o subproblema é resolvido
+de novo, repetindo até um passo ser aceito ou até `μ` ultrapassar `mu_max`
+(ou o número de tentativas passar de `max_mu_increases`).
+
+A cada rejeição (`ρₖ < ratio_eta1`), além de crescer `μ`, a Hessiana
+`H[model]` do modelo vencedor daquela tentativa (`model = direction_source`,
+o único responsável pela previsão ruim que gerou o `ρₖ` baixo) é reiniciada
+por completo (zerada), descartando toda a curvatura acumulada por ele até
+ali — não só a última atualização, mas a aproximação inteira, voltando esse
+modelo a Gauss-Newton puro. Só a Hessiana do modelo culpado é reiniciada; as
+dos demais modelos em `update` continuam intactas. O subproblema é então
+resolvido de novo com essa `H` zerada antes de tentar o próximo `μ`.
+
+Um modelo reiniciado numa iteração fica de fora da disputa por direção
+(`for model in models` de 2.3.2) só na iteração externa seguinte — dá espaço
+pros outros modelos de `update` antes dele voltar a competir. Ele continua
+recebendo a atualização secante normal em 2.3.5 nesse meio-tempo (não fica
+"congelado", só não disputa a seleção por uma iteração). Se banir os modelos
+recém-reiniciados deixaria a disputa sem nenhum candidato (só há um modelo
+em `update`, ou todos foram reiniciados na iteração anterior), o banimento é
+ignorado e todos voltam a competir imediatamente.
+
+A iteração `k=0` **nunca** passa pelo subproblema em `μ`: como nenhum
+`H[model]` foi construído ainda (todas começam em zero), o primeiro passo é
+sempre `-∇f(x₀)` com busca linear de Armijo por `fallback_linesearch`
+(padrão `LineSearches.BackTracking(order = 3)`), e é o par `(s,y)` desse
+passo que inicializa de fato as Hessianas em cada `H[model]`.
+
+Da iteração `k=1` em diante, se a busca em `μ` (com os resets de modelo) se
+esgotar sem um passo aceito, usa-se essa mesma direção `-∇f(xₖ)`+Armijo como
+salvaguarda antes de desistir — evita parar prematuramente quando o modelo
+quártico local está mal condicionado mas o gradiente negativo ainda é uma
+direção de descida válida. Só se essa busca linear também falhar (ou
+`-∇f(xₖ)` não for direção de descida, ou seja `∇f(xₖ)ᵀ(-∇f(xₖ)) ≥ 0`, o que
+só ocorre com gradiente nulo) a iteração externa para com
+`status = :regularization_stalled`. Um passo aceito por essa via (em `k=0`
+ou como salvaguarda) não informa o amortecimento do modelo quártico (não
+veio dele), então `μ` não decresce nessa iteração — fica como estava para a
+próxima tentativa.
 
 `F` deve receber um vetor e devolver diretamente um vetor de resíduos.
 Se `jacobian` não for fornecida, a Jacobiana é calculada com
@@ -150,16 +207,19 @@ O retorno é um `NamedTuple` com os campos `minimizer`, `minimum`,
 `execution_time_seconds`, `function_evaluations`, `gradient_evaluations`,
 `function_evaluation_time_seconds`, `gradient_evaluation_time_seconds`,
 `total_function_evaluation_time_seconds`,
-`total_gradient_evaluation_time_seconds`, `rejected_directions` e
-`heavy_ball_used` (quantas vezes a direção da bola pesada foi de fato aceita).
+`total_gradient_evaluation_time_seconds`, `rejected_directions` (passos
+rejeitados pelo teste de razão), `model_resets` (quantas vezes a Hessiana de
+um modelo foi zerada por completo após uma razão ruim, ver acima),
+`gradient_fallback_used` (quantas iterações `k>0` precisaram da salvaguarda
+`-∇f`+Armijo; não conta a iteração `k=0`, que sempre usa essa direção por
+construção) e `mu_history` (valor de `μ` ao final de cada iteração aceita).
 Os campos de tempo sem o prefixo `total_` representam o custo médio de uma
 chamada.
 """
-
 function ffjm2(
     F,
     x0::AbstractVector;
-    update::Symbol = :bfgs,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = FFJM2_ALL_MODELS,
     jacobian = nothing,
     maxiter::Integer = 1000,
     g_tol::Real = 1e-8,
@@ -172,15 +232,16 @@ function ffjm2(
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
     model_solver::Symbol = :ipopt,
-    direction_theta::Real = 1e-4,
-    direction_beta::Real = 1e-8,
-    direction_delta::Real = Inf,
-    #heavy_ball_beta::Union{Nothing,Real} = nothing,
-    heavy_ball_beta = 0.1,
+    mu_initial::Real = 1.0,
+    mu_grow::Real = 10.0,
+    mu_min::Real = 1e-8,
+    mu_max::Real = 1e12,
+    ratio_eta1::Real = 0.1,
+    max_mu_increases::Integer = 30,
+    fallback_linesearch = LineSearches.BackTracking(order = 2),
     gamma_bar::Real = 10.0,
     initial_scaling::Bool = false,
     update_tol::Real = sqrt(eps(Float64)),
-    linesearch = LineSearches.BackTracking(order = 3),
     callback = nothing,
     show_trace::Bool = false,
 )
@@ -188,8 +249,12 @@ function ffjm2(
     # 2.1. Validação dos parâmetros
     # --------------------------------------------------------------------------
     start_time_ns = time_ns()
-    update in (:bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model, :psb) ||
-        throw(ArgumentError("update deve ser :bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model ou :psb"))
+    models = update isa Symbol ? (update,) : update
+    !isempty(models) || throw(ArgumentError("update não pode ser um tuple vazio"))
+    all(model -> model in (:bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model, :psb), models) ||
+        throw(ArgumentError(
+            "cada elemento de update deve ser :bfgs, :sr1, :is_bfgs, :dw_model, :is_dw_model ou :psb",
+        ))
     gamma_bar > 1 || throw(ArgumentError("gamma_bar deve ser maior que 1"))
     model_solver in (:ipopt, :bfgs, :bobyqa, :mads) ||
         throw(ArgumentError("model_solver deve ser :ipopt, :bfgs, :bobyqa ou :mads"))
@@ -198,14 +263,16 @@ function ffjm2(
         throw(ArgumentError("model_multistart deve ser pelo menos 1"))
     isfinite(model_start_spread) && model_start_spread >= 0 ||
         throw(ArgumentError("model_start_spread deve ser finito e não negativo"))
-    0 < direction_theta < 1 ||
-        throw(ArgumentError("direction_theta deve pertencer a (0, 1)"))
-    direction_beta > 0 ||
-        throw(ArgumentError("direction_beta deve ser positivo"))
-    direction_delta > 0 ||
-        throw(ArgumentError("direction_delta deve ser positivo"))
-    heavy_ball_beta === nothing || (isfinite(heavy_ball_beta) && heavy_ball_beta >= 0) ||
-        throw(ArgumentError("heavy_ball_beta deve ser nothing ou não negativo"))
+    isfinite(mu_initial) && mu_initial > 0 ||
+        throw(ArgumentError("mu_initial deve ser finito e positivo"))
+    mu_grow > 1 || throw(ArgumentError("mu_grow deve ser maior que 1"))
+    isfinite(mu_min) && 0 < mu_min <= mu_initial ||
+        throw(ArgumentError("mu_min deve ser finito, positivo e <= mu_initial"))
+    isfinite(mu_max) && mu_max >= mu_initial ||
+        throw(ArgumentError("mu_max deve ser finito e >= mu_initial"))
+    0 < ratio_eta1 < 1 || throw(ArgumentError("ratio_eta1 deve pertencer a (0, 1)"))
+    max_mu_increases >= 1 ||
+        throw(ArgumentError("max_mu_increases deve ser pelo menos 1"))
 
     # --------------------------------------------------------------------------
     # 2.2. Resíduos e Jacobiana no ponto inicial
@@ -246,7 +313,7 @@ function ffjm2(
     initial_rms = norm(r) / sqrt(length(r))
     if show_trace
         println(
-            "ffjm2 ($(uppercase(string(update)))) iter 0: ",
+            "ffjm2 ($(join(uppercase.(string.(models)), ","))) iter 0: ",
             "f = $(0.5 * dot(r, r)), RMSD = $initial_rms (antes da Jacobiana)",
         )
     end
@@ -275,23 +342,31 @@ function ffjm2(
     x = T.(x)
     r = T.(r)
     J = T.(J)
-    H = [zeros(T, n, n) for _ in 1:m]
+    H = Dict(model => [zeros(T, n, n) for _ in 1:m] for model in models)
     f = T(0.5) * dot(r, r)
     g = J' * r
     status = :maximum_iterations
     iterations = 0
     rejected_directions = 0
+    gradient_fallback_used = 0
+    model_resets = 0
     model_solves = 0
     model_iterations = 0
     model_solve_time_seconds = 0.0
-    alphas = T[]
-    last_alpha = one(T)
-    last_backtrackings = 0
-    last_direction_rejected = false
+    mu_history = T[]
+    mu = T(mu_initial)
+    last_mu = mu
+    last_ratio = T(NaN)
+    # Modelos reiniciados (H zerada) na iteração anterior ficam de fora da
+    # disputa por direção nesta iteração — dão uma iteração pra outros
+    # modelos (que não foram zerados) tentarem antes de competir de novo.
+    # Ainda recebem a atualização secante normal em 2.3.5 (não ficam
+    # "congelados", só não competem por 1 iteração).
+    benched_models = Set{Symbol}()
+    last_mu_increases = 0
     last_direction_norm = zero(T)
-    last_direction_source = :model
-    heavy_ball_used = 0
-    previous_step = nothing
+    last_direction_source = first(models)
+    last_model_directions = Dict{Symbol,Vector{T}}()
 
     # --------------------------------------------------------------------------
     # 2.3. Laço principal do método externo
@@ -302,20 +377,18 @@ function ffjm2(
         residual_rms = norm(r) / sqrt(length(r))
         if show_trace && k > 0
             println(
-                "ffjm2 ($(uppercase(string(update)))) iter $k: ",
+                "ffjm2 ($(join(uppercase.(string.(models)), ","))) iter $k: ",
                 "f = $f, RMSD = $residual_rms, ",
-                "α = $last_alpha, backtrackings = $last_backtrackings, ",
-                "direção rejeitada = $last_direction_rejected, ",
-                "fonte da direção = $last_direction_source",
+                "μ (última aceita) = $last_mu, ρ = $last_ratio, aumentos de μ = $last_mu_increases, ",
+                "‖d‖ = $last_direction_norm",
             )
         end
         state = (; iteration = k, x = copy(x), value = f, residual = copy(r),
                  residual_rms, gradient = copy(g), gradient_norm = gnorm,
-                 alpha = k == 0 ? nothing : last_alpha,
-                 backtrackings = k == 0 ? 0 : last_backtrackings,
-                 direction_rejected = k == 0 ? false : last_direction_rejected,
-                 direction_norm = k == 0 ? nothing : last_direction_norm,
-                 direction_source = last_direction_source)
+                 mu = last_mu,
+                 ratio = k == 0 ? nothing : last_ratio,
+                 mu_increases = k == 0 ? 0 : last_mu_increases,
+                 direction_norm = k == 0 ? nothing : last_direction_norm)
         if callback !== nothing && callback(state) === true
             status = :callback
             iterations = k
@@ -336,117 +409,206 @@ function ffjm2(
             break
         end
 
-        # 2.3.2. Direção: gradiente negativo em k=0; modelo quártico para k>0.
-        model_result = nothing
-        direction_source = k == 0 ? :gradient : :model
-        if k == 0
-            p = -g
-        else
-            model_result = _ffjm2_model_direction(
-                r,
-                J,
-                H,
-                last_direction_norm,
-                model_maxiter,
-                model_g_tol,
-                model_multistart,
-                model_start_spread,
-                model_seed + k,
-                model_solver,
-            )
-            model_solves += 1
-            model_iterations += model_result.total_iterations
-            model_solve_time_seconds += model_result.solve_time_seconds
-            p = model_result.direction
+        # 2.3.2. Subproblema amortecido por μ: resolve uma vez por modelo em
+        # `models`, escolhe a direção de maior descida entre as candidatas
+        # (a que minimiza ∇f(xₖ)ᵀd) e testa a razão ρₖ; aumenta μ (repetindo
+        # a resolução para todos os modelos) enquanto o passo for rejeitado.
+        # μ persiste entre iterações externas (começa em `mu_initial`, ver
+        # 2.3.4): cada iteração tenta primeiro o μ deixado pela anterior, em
+        # vez de reiniciar do zero. Não roda em k=0 (ver comentário abaixo).
+        mu_increases = 0
+        accepted = false
+        d = zeros(T, n)
+        direction_source = last_direction_source
+        xnew = x
+        rnew = r
+        fnew = f
+        best_model_result = nothing
+        ratio = T(NaN)
+        reset_this_iteration = Set{Symbol}()
+        # Modelos reiniciados na iteração anterior não disputam a seleção de
+        # direção nesta iteração (ver `benched_models` acima). Se isso
+        # baniria todos os modelos de uma vez, ignora o banimento em vez de
+        # ficar sem candidato nenhum.
+        active_models = setdiff(models, benched_models)
+        isempty(active_models) && (active_models = models)
+        if show_trace && k > 0 && length(active_models) < length(models)
+            println("  Modelos de molho (reiniciados na iteração anterior): ", benched_models)
         end
-
-        # 2.3.3. Aceitação da direção pela condição (2) do Algoritmo 2.1.
-        gnorm = norm(g)
-        direction_valid(d, dn) = all(isfinite, d) &&
-            dot(g, d) <= -direction_theta * dn^2 * gnorm^2 &&
-            direction_beta * gnorm <= dn <= direction_delta
-        direction_rejected = !direction_valid(p, norm(p))
-        if direction_rejected
-            rejected_directions += 1
-            p = -g
-            direction_source = :gradient
-            # Extensão fora do artigo: em vez de aceitar -g cegamente (como no
-            # pseudocódigo da Seção 4), tenta antes a direção da bola pesada
-            # (-g + β·passo_anterior), que também precisa satisfazer a
-            # condição (2) — se falhar, cai em -g puro exatamente como antes.
-            if heavy_ball_beta !== nothing && previous_step !== nothing
-                d_heavy_ball = p .+ heavy_ball_beta .* previous_step
-                if direction_valid(d_heavy_ball, norm(d_heavy_ball))
-                    p = d_heavy_ball
-                    direction_source = :heavy_ball
-                    heavy_ball_used += 1
+        # Na iteração 0 não há Hessiana nenhuma ainda (H[model] começa em
+        # zero para todo `model`): pula direto para a salvaguarda de 2.3.3,
+        # que usa -∇f(x₀) com backtracking de Armijo. O primeiro par (s,y)
+        # dessa iteração é o que inicia de fato as Hessianas em 2.3.5.
+        while k > 0
+            best_directional_derivative = T(Inf)
+            best_direction = nothing
+            for model in active_models
+                model_result = _ffjm2_model_direction(
+                    r,
+                    J,
+                    H[model],
+                    mu,
+                    last_direction_norm,
+                    model_maxiter,
+                    model_g_tol,
+                    model_multistart,
+                    model_start_spread,
+                    model_seed + k,
+                    model_solver,
+                )
+                model_solves += 1
+                model_iterations += model_result.total_iterations
+                model_solve_time_seconds += model_result.solve_time_seconds
+                last_model_directions[model] = model_result.direction
+                if show_trace
+                    println(
+                        "  Subproblema ($model): μ = $mu | ", model_result.stop_reason,
+                        " | Mₖ(x̄) = ", model_result.minimum,
+                    )
+                end
+                dtg = dot(g, model_result.direction)
+                if all(isfinite, model_result.direction) && dtg < best_directional_derivative
+                    best_directional_derivative = dtg
+                    best_direction = model_result.direction
+                    best_model_result = model_result
+                    direction_source = model
                 end
             end
-        end
-        last_direction_rejected = direction_rejected
-        last_direction_source = direction_source
-        last_direction_norm = norm(p)
+            d = best_direction === nothing ? -g : best_direction
+            predicted_reduction = f -
+                (best_model_result === nothing ? f : best_model_result.minimum_unpenalized)
 
-        # 2.3.4. Busca linear de Armijo na função objetivo verdadeira.
-        line_search_evaluations = Ref(0)
-        ϕ(α) = begin
-            line_search_evaluations[] += 1
-            rα = residual(x .+ α .* p)
-            T(0.5) * dot(rα, rα)
-        end
-        dϕ0 = dot(g, p)
-        α, fnew = try
-            linesearch(ϕ, one(T), f, dϕ0)
-        catch err
-            if err isa LineSearches.LineSearchException
-                status = :line_search_failed
-                iterations = k
-                break
-            end
-            rethrow()
-        end
-        last_alpha = α
-        push!(alphas, α)
-        last_backtrackings = max(line_search_evaluations[] - 1, 0)
+            xnew = x .+ d
+            rnew = T.(residual(xnew))
+            fnew = T(0.5) * dot(rnew, rnew)
+            actual_reduction = f - fnew
 
-        # 2.3.5. Avaliação verdadeira no ponto aceito pela busca linear.
-        xnew = x .+ α .* p
-        external_evaluation_start_ns = time_ns()
-        rnew = T.(residual(xnew))
-        fnew = T(0.5) * dot(rnew, rnew)
-        external_evaluation_time_seconds =
-            (time_ns() - external_evaluation_start_ns) / 1e9
-        if show_trace
-            print(
-                "  Avaliação externa f(x): ",
-                round(external_evaluation_time_seconds; digits = 6),
-                " s",
-            )
-            if model_result !== nothing
-                print(
-                    " | Ipopt multi-start interno: ", model_result.stop_reason,
-                    " | melhor início = ", model_result.best_start,
-                    "/", model_result.starts,
-                    " | iterações = ", model_result.iterations,
-                    " | Mₖ(x̄) = ", model_result.minimum,
-                    " | tempo total do subproblema = ",
-                    round(model_result.solve_time_seconds; digits = 6),
-                    " s",
+            ratio = predicted_reduction > 0 ?
+                actual_reduction / predicted_reduction :
+                (actual_reduction > 0 ? T(Inf) : T(-Inf))
+
+            if show_trace
+                println(
+                    "  μ = $mu | fonte = $direction_source | red. prevista = ",
+                    predicted_reduction, " | red. real = ", actual_reduction,
+                    " | ρ = ", ratio,
                 )
             end
-            println()
+
+            if ratio >= ratio_eta1 && all(isfinite, d)
+                accepted = true
+                break
+            end
+
+            rejected_directions += 1
+            # Se a razão ficou abaixo de `ratio_eta1`, o modelo quártico do
+            # vencedor desta tentativa (`direction_source`) previu mal a
+            # redução real — reinicia essa Hessiana do zero (volta a
+            # Gauss-Newton puro pra esse modelo), em vez de manter a
+            # curvatura que gerou a previsão ruim. Só o modelo culpado é
+            # reiniciado; os demais mantêm sua própria `H`. Idempotente: se
+            # já estiver zerada (ex.: tentativa anterior já reiniciou),
+            # repetir não tem efeito.
+            if best_model_result !== nothing
+                for Hi in H[direction_source]
+                    fill!(Hi, zero(T))
+                end
+                model_resets += 1
+                push!(reset_this_iteration, direction_source)
+            end
+            mu_increases += 1
+            mu = min(mu * T(mu_grow), T(mu_max))
+            if mu >= mu_max || mu_increases >= max_mu_increases
+                break
+            end
         end
-        # 2.3.6. Atualização das Hessianas individuais e do estado externo.
+        # Modelos reiniciados nesta iteração ficam de fora da disputa só na
+        # PRÓXIMA iteração (k+1); a partir da seguinte (k+2) voltam a
+        # competir normalmente.
+        benched_models = reset_this_iteration
+
+        # 2.3.3. Direção -∇f(xₖ) com backtracking de Armijo
+        # (`fallback_linesearch`). Roda em dois casos, ambos caracterizados
+        # por `!accepted` neste ponto: (i) k=0, onde 2.3.2 nem chega a
+        # executar porque nenhum `H[model]` foi construído ainda; (ii) k>0,
+        # como salvaguarda, quando nem o Gauss-Newton nem os aumentos/resets
+        # de μ de 2.3.2 produziram um passo aceito. Só se essa busca linear
+        # também falhar (ou `-∇f(xₖ)` não for direção de descida) a iteração
+        # externa para com `status = :regularization_stalled`.
+        gradient_fallback = false
+        if !accepted
+            p = -g
+            directional_derivative = dot(g, p)
+            if directional_derivative < 0
+                trial_residual = Ref(r)
+                ϕ(α) = begin
+                    xtrial = x .+ α .* p
+                    rtrial = T.(residual(xtrial))
+                    trial_residual[] = rtrial
+                    T(0.5) * dot(rtrial, rtrial)
+                end
+                try
+                    α, ftrial = fallback_linesearch(ϕ, one(T), f, directional_derivative)
+                    d = α .* p
+                    xnew = x .+ d
+                    rnew = trial_residual[]
+                    fnew = T(ftrial)
+                    direction_source = :gradient_backtracking
+                    accepted = true
+                    gradient_fallback = true
+                catch err
+                    err isa LineSearches.LineSearchException || rethrow()
+                end
+            end
+            if show_trace
+                println(
+                    "  -∇f + backtracking (", k == 0 ? "iteração 0" : "salvaguarda", "): ",
+                    accepted ? "aceita (‖d‖ = $(norm(d)))" : "falhou",
+                )
+            end
+        end
+
+        last_ratio = ratio
+        last_mu_increases = mu_increases
+        last_direction_norm = norm(d)
+        last_direction_source = direction_source
+        last_mu = mu
+        push!(mu_history, mu)
+        # k=0 sempre usa -∇f+Armijo por construção (não há H ainda); só conta
+        # como "fallback" quando acontece em k>0, isto é, quando 2.3.2 de
+        # fato tentou e falhou o subproblema quártico.
+        gradient_fallback && k > 0 && (gradient_fallback_used += 1)
+
+        if !accepted
+            status = :regularization_stalled
+            iterations = k
+            break
+        end
+
+        # 2.3.4. Passo aceito: μ decresce para a próxima iteração externa
+        # (encolhe pelo mesmo fator `mu_grow` usado para crescer, com piso
+        # `mu_min`), em vez de reiniciar em 0. Reflete a versão que funcionou
+        # melhor nos testes: μ começa em `mu_initial` (padrão 1) e vai
+        # decrescendo ao longo das iterações, só voltando a crescer quando um
+        # passo é de fato rejeitado. O passo de salvaguarda por gradiente não
+        # informa o amortecimento do LM (não veio do modelo quártico), então
+        # μ fica como estava para a próxima tentativa.
+        gradient_fallback || (mu = max(mu / T(mu_grow), T(mu_min)))
+
+        # 2.3.5. Atualização das Hessianas individuais e do estado externo.
         Jnew = T.(jac(xnew))
         s = xnew - x
         if initial_scaling && k == 0
             alpha0 = norm(s) / gnorm
-            for Hi in H
-                Hi .= alpha0 .* Matrix{T}(I, n, n)
+            for model in models
+                for Hi in H[model]
+                    Hi .= alpha0 .* Matrix{T}(I, n, n)
+                end
             end
         end
-        _ffjm2_update!(H, s, Jnew, J, update, update_tol, gamma_bar)
-        previous_step = s
+        for model in models
+            _ffjm2_update!(H[model], s, Jnew, J, model, update_tol, gamma_bar)
+        end
 
         fold = f
         x, r, J, f = xnew, rnew, Jnew, T(fnew)
@@ -484,6 +646,7 @@ function ffjm2(
         residual = r,
         gradient = g,
         hessians = H,
+        models,
         iterations,
         converged,
         status,
@@ -495,12 +658,15 @@ function ffjm2(
         total_function_evaluation_time_seconds,
         total_gradient_evaluation_time_seconds,
         rejected_directions,
-        heavy_ball_used,
-        alphas,
+        gradient_fallback_used,
+        model_resets,
+        mu_history,
         model_solver,
         model_solves,
         model_iterations,
         model_solve_time_seconds,
+        last_model_directions,
+        direction_source = last_direction_source,
     )
 end
 
@@ -509,8 +675,7 @@ end
 #
 # Para cada resíduo f_i, H[i] aproxima ∇²f_i. A atualização utiliza
 # s = x_{k+1} - x_k e y_i = ∇f_i(x_{k+1}) - ∇f_i(x_k). `update` pode ser
-# `:bfgs`, `:sr1`, ou os mesmos três modelos extras de `ffjm2_box.jl`
-# (ver `_ffjm2_box_update!` lá para a derivação completa de cada fórmula):
+# `:bfgs`, `:sr1`, ou os três modelos extras abaixo:
 #
 #   * `:is_bfgs` — BFGS auto-escalado com teste de intervalo (Lukšan &
 #     Spedicato, 2000, `_research/IS_BFGS.pdf`).
@@ -520,9 +685,7 @@ end
 #   * `:psb` — Powell-Symmetric-Broyden (Powell, 1970).
 #
 # `gamma_bar` só é usado por `:is_bfgs`/`:is_dw_model`; tem um valor padrão
-# para não quebrar as chamadas antigas de 6 argumentos (`ffjm2_trust.jl`
-# reaproveita esta função, mas só permite `update ∈ {:bfgs, :sr1}`, então
-# nunca aciona os ramos novos).
+# para não quebrar chamadas antigas de 6 argumentos.
 # ==============================================================================
 
 function _ffjm2_update!(H, s, Jnew, Jold, update, tol, gamma_bar = 10.0)
@@ -614,7 +777,15 @@ end
 # O Ipopt trabalha com a variável absoluta x. Internamente usamos d = x - xk:
 #
 #   q_i(x) = r_i + J_i*d + 1/2*d'*H_i*d
-#   M_k(d) = 1/2 * Σ_i q_i(d)^2.
+#   M_k(d) = μ‖d‖² + 1/2 * Σ_i q_i(d)^2.
+#
+# O termo μ‖d‖² (μ = penalty) é a regularização de Levenberg-Marquardt que
+# substitui a busca linear de Armijo: em vez de resolver o subproblema sem
+# amortecimento e depois escolher um passo α por busca linear, o subproblema
+# já sai amortecido por μ, e o passo é sempre d inteiro (α=1). Se x+d não for
+# aceito, `ffjm2` aumenta μ e resolve de novo (ver seção 6) — μ maior
+# amortece mais a Hessiana do modelo e encolhe ‖d‖, μ menor deixa o passo se
+# aproximar do passo de Gauss-Newton puro.
 #
 # O avaliador fornece ao Ipopt o valor, o gradiente e a Hessiana exata de M_k.
 # ==============================================================================
@@ -623,6 +794,7 @@ struct _FFJM2IpoptEvaluator{T} <: MOI.AbstractNLPEvaluator
     r::Vector{T}
     J::Matrix{T}
     H::Vector{Matrix{T}}
+    penalty::T
 end
 
 # Recursos analíticos disponibilizados ao Ipopt.
@@ -650,13 +822,14 @@ end
 # Valor do modelo quártico M_k(d).
 function MOI.eval_objective(evaluator::_FFJM2IpoptEvaluator, d)
     q, _ = _ffjm2_model_components(evaluator, d)
-    return dot(q, q) / 2
+    return evaluator.penalty * sum(abs2, d) + dot(q, q) / 2
 end
 
-# Gradiente exato: ∇M_k(d) = A' * q.
+# Gradiente exato: ∇M_k(d) = 2μd + A' * q.
 function MOI.eval_objective_gradient(evaluator::_FFJM2IpoptEvaluator, gradient, d)
     q, A = _ffjm2_model_components(evaluator, d)
     mul!(gradient, A', q)
+    gradient .+= (2 * evaluator.penalty) .* d
     return nothing
 end
 
@@ -666,7 +839,7 @@ function MOI.hessian_lagrangian_structure(evaluator::_FFJM2IpoptEvaluator)
     return [(i, j) for i in 1:n for j in 1:i]
 end
 
-# Hessiana exata: ∇²M_k(d) = A'A + Σ_i q_i(d)H_i.
+# Hessiana exata: ∇²M_k(d) = 2μI + A'A + Σ_i q_i(d)H_i.
 function MOI.eval_hessian_lagrangian(
     evaluator::_FFJM2IpoptEvaluator,
     values,
@@ -681,6 +854,9 @@ function MOI.eval_hessian_lagrangian(
     for i in eachindex(q)
         hessian .+= q[i] .* evaluator.H[i]
     end
+    for i in axes(hessian, 1)
+        hessian[i, i] += 2 * evaluator.penalty
+    end
     index = 1
     for i in axes(hessian, 1), j in 1:i
         values[index] = objective_factor * hessian[i, j]
@@ -694,12 +870,16 @@ end
 #
 # O primeiro Ipopt começa em d = 0. Os demais começam em perturbações
 # gaussianas ao redor de zero. A melhor solução local é diretamente d_k.
+# `mu` amortece o subproblema (ver seção 4); o valor devolvido em
+# `minimum_unpenalized` é ½Σqᵢ(d)² sem o termo μ‖d‖², usado por `ffjm2` para
+# calcular a razão entre redução real e prevista.
 # ==============================================================================
 
 function _ffjm2_model_direction(
     r,
     J,
     H,
+    mu,
     last_direction_norm,
     maxiter,
     g_tol,
@@ -712,12 +892,12 @@ function _ffjm2_model_direction(
     n = size(J, 2)
     # Escala pelo último passo aceito (mesma unidade de d), com piso em
     # `start_spread` para não colapsar a zero quando o passo anterior foi
-    # minúsculo (ex. por muito backtracking) sem o método ter de fato
-    # convergido. Usar ‖g‖ aqui misturava unidades (∂f/∂x vs. x) e explodia
-    # o raio de busca do Ipopt quando o gradiente externo ainda estava
-    # grande — ver mgh10 no histórico de testes.
+    # minúsculo sem o método ter de fato convergido. Usar ‖g‖ aqui misturava
+    # unidades (∂f/∂x vs. x) e explodia o raio de busca do Ipopt quando o
+    # gradiente externo ainda estava grande — ver mgh10 no histórico de
+    # testes.
     start_spread = max(last_direction_norm, start_spread)
-    evaluator = _FFJM2IpoptEvaluator(collect(r), Matrix(J), H)
+    evaluator = _FFJM2IpoptEvaluator(collect(r), Matrix(J), H, eltype(r)(mu))
     rng = MersenneTwister(seed)
     starts = Vector{Vector{eltype(r)}}(undef, Int(multistart))
     starts[1] = zeros(eltype(r), n)
@@ -823,6 +1003,8 @@ function _ffjm2_model_direction(
     result = results[best_start]
     total_iterations = sum(item.iterations for item in results)
     solve_time_seconds = (time_ns() - solve_start_ns) / 1e9
+    q_best, _ = _ffjm2_model_components(evaluator, result.minimizer)
+    minimum_unpenalized = dot(q_best, q_best) / 2
 
     return (
         direction = result.minimizer,
@@ -831,6 +1013,7 @@ function _ffjm2_model_direction(
         iterations = result.iterations,
         total_iterations,
         minimum = result.minimum,
+        minimum_unpenalized,
         solve_time_seconds,
         best_start,
         starts = length(starts),
