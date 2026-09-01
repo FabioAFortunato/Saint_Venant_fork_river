@@ -3,10 +3,14 @@
 \usepackage[a4paper,margin=2cm]{geometry}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
+\usepackage{amsmath}
 \usepackage{longtable}
 \usepackage{booktabs}
 \usepackage{siunitx}
 \usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+
 
 \sisetup{
     scientific-notation = true,
@@ -15,6 +19,8 @@
     exponent-product = \times,
 }
 
+\newcommand{\IR}{I\!\!R}
+
 \title{FFJM2 vs.\ BFGS on the MGH Problems}
 \author{}
 \date{}
@@ -22,29 +28,57 @@
 \begin{document}
 \maketitle
 
-\noindent
-FFJM2 minimizes $\frac{1}{2}\|F(x)\|^2$ with a local quartic model of the
-residuals instead of a line search. At iteration $k$, the step $d$ solves
-\[
-    M_k(d) = \mu\|d\|^2 + \frac{1}{2}\sum_i q_i(d)^2, \qquad
-    q_i(d) = r_i + J_i d + \frac{1}{2} d^\top H_i d,
-\]
-where $r_i$ and $J_i$ are the $i$-th residual and its Jacobian row at
-$x_k$, $H_i$ is the current approximation to the Hessian of that residual
-component, and $\mu\|d\|^2$ is a Levenberg-Marquardt penalty that damps the
-step in place of a line search. The candidate $x_k+d$ is accepted or
-rejected based on the ratio between the actual and the predicted reduction
-in $f$.
+\section{Computational tests}
+\label{sec:computational-tests}
 
-The first iteration starts at
-$\mu = 1$. Each accepted step divides $\mu$ by a fixed factor $\mu_{grow} = 10$, with a floor
-$\mu_{\min} = 1^{-8}$, so $\mu$ keeps shrinking. Each rejected step instead
-multiplies $\mu$ by that same factor $\mu_{grow} = 10$ and re-solves the subproblem at the
-same point, until a step is accepted or $\mu$ reaches a ceiling
-$\mu_{\max} = 1^{12}$. Unlike a scheme that resets $\mu$ at the start of every
-iteration, this value always carries over from the previous one. This
-carryover performed better in practice than restarting $\mu$ from scratch
-each time.
+\noindent
+In this section we evaluate the performance of \texttt{ffjm2}
+(Algorithm~\ref{complexity}) and compare it against a classical
+sum-of-squares approach. We run two types of tests. In the first, we
+consider the MGH (Mor\'e, Garbow, and Hillstrom) sum-of-squares test
+problems \cite{MoreGarbowHillstrom1981}, a benchmark of 34 classical
+problems; this part is important to us because it helps us settle on a
+good solver and Hessian approximation. In the second part, we solve a
+hydraulic problem in which we need to estimate a coefficient of a PDE
+called the Saint-Venant equation.
+
+\subsection{MGH problems}
+\label{sec:mgh-problems}
+
+\noindent
+\texttt{ffjm2} minimizes $f(x) = \frac{1}{2}\|F(x)\|_2^2$ (Section~3,
+Eq.~(16)) by minimizing, at each iteration, a local quartic model of the
+residuals in place of a line search. Following Algorithm~4.1 (Eq.~(21)),
+the step $s$ at iteration $k$ solves
+\[
+    M_k(s) = \sigma\|s\|_2^2 + \frac{1}{2}\sum_{i=1}^m q_i(s)^2, \qquad
+    q_i(s) = f_i(x_k) + \nabla f_i(x_k)^\top s + \frac{1}{2} s^\top H_i s,
+\]
+where $f_i$ and $\nabla f_i$ are the $i$-th residual and its gradient at
+$x_k$ (Section~3), $H_i$ is the current quasi-Newton approximation to its
+Hessian (e.g.\ BFGS or SR1, Eqs.~(19)/(20); four further variants are
+compared in Table~\ref{tab:hessian-models} below), and $\sigma\|s\|_2^2$
+is the Levenberg-Marquardt-style regularization of Algorithm~4.1 that
+damps the step in place of a line search. The candidate $x_k + s$ is
+checked for feasibility as in Step~3 (Eq.~(24)); acceptance then uses the
+ratio $\rho_k$ between the actual and the model-predicted reduction in
+$f$ --- a refinement of Algorithm~4.1's simpler decrease test (Eq.~(25))
+--- accepting whenever $\rho_k \ge \eta_1$ for a fixed threshold $\eta_1$.
+
+The implementation tested below also refines Algorithm~4.1's
+regularization update (Eq.~(30)) with an additional decay on acceptance.
+The first iteration starts at $\sigma = 1$. Each accepted step now divides
+$\sigma$ by a fixed factor $\sigma_{grow} = 10$, with a floor
+$\sigma_{\min} = 10^{-8}$, so $\sigma$ keeps shrinking --- unlike
+Algorithm~4.1's plain carryover $\sigma_k \leftarrow \sigma$ on
+acceptance. Each rejected step, as in Eq.~(30), multiplies $\sigma$ by
+the same factor $\sigma_{grow} = 10$ and re-solves the subproblem at the
+same point, until a step is accepted or $\sigma$ reaches a ceiling
+$\sigma_{\max} = 10^{12}$ (not present in the base algorithm). Unlike a
+scheme that resets $\sigma$ at the start of every iteration, this value
+always carries over from the previous one; this decaying carryover
+performed better in practice than restarting $\sigma$ from scratch each
+time.
 
 Every run reported below stops under one of three point-wise criteria,
 evaluated with the same default tolerances for \texttt{ffjm2} and for
@@ -73,11 +107,51 @@ models, each run independently on the 34 MGH least-squares problems
 \cite{MoreGarbowHillstrom1981}. Its ``Converged (gradient)'' column counts
 how many of the 34 problems stopped under the gradient criterion; the
 remaining columns are mean~$\pm$~standard deviation over the 34 problems.
-The models are plain BFGS and SR1, the Dennis-Wolkowicz update
-\cite{DennisWolkowicz1993} (DW) and its interval-scaled variant
-\cite{LuksanSpedicato2000} (IS+DW), interval-scaled BFGS
-\cite{LuksanSpedicato2000} (IS+BFGS), and Powell-Symmetric-Broyden
-\cite{Powell1970} (PSB).
+Each model keeps its own set of matrices $H_i \approx \nabla^2 f_i(x_k)$,
+$i=1,\ldots,m$, updated at every accepted step from $s = x_{k+1}-x_k$ and
+$y_i = \nabla f_i(x_{k+1}) - \nabla f_i(x_k)$:
+\begin{itemize}
+    \item \textbf{BFGS}: the classical rank-two secant update (Eq.~(19)),
+    \[
+        H_i \leftarrow H_i - \frac{H_i s\,s^T H_i}{s^T H_i s} + \frac{y_i y_i^T}{s^T y_i}.
+    \]
+    \item \textbf{SR1}: the symmetric rank-one update (Eq.~(20)),
+    \[
+        H_i \leftarrow H_i + \frac{(y_i - H_i s)(y_i - H_i s)^T}{(y_i - H_i s)^T s}.
+    \]
+    \item \textbf{DW} (Dennis-Wolkowicz \cite{DennisWolkowicz1993}, Theorem
+    4.5(iii)): a Broyden-class update that adds a third, symmetrizing
+    rank-one term to the BFGS pair,
+    \[
+        H_i \leftarrow H_i - \frac{H_i s\,s^T H_i}{s^T H_i s} + \frac{y_i y_i^T}{s^T y_i}
+        + (s^T y_i)\, w_i w_i^T, \qquad
+        w_i = \frac{y_i}{s^T y_i} - \frac{H_i s}{s^T H_i s}.
+    \]
+    \item \textbf{IS+BFGS} (interval-scaled BFGS \cite{LuksanSpedicato2000}):
+    BFGS with an extra self-scaling factor $\tau$ applied to the outdated
+    part of $H_i$ before the update,
+    \[
+        H_i \leftarrow \tau\left(H_i - \frac{H_i s\,s^T H_i}{s^T H_i s}\right)
+        + \frac{y_i y_i^T}{s^T y_i}, \qquad
+        \tau = \begin{cases} 1/\gamma & \text{if } \bar\gamma^{-1} \le \gamma \le \bar\gamma \\
+        1 & \text{otherwise,} \end{cases} \qquad
+        \gamma = \frac{s^T H_i s}{s^T y_i},
+    \]
+    with $\bar\gamma = 10$ (the default \texttt{gamma\_bar}).
+    \item \textbf{IS+DW} (interval-scaled DW \cite{LuksanSpedicato2000}): the
+    same interval scaling $\tau$ applied inside the DW update above,
+    \[
+        H_i \leftarrow \tau\left(H_i - \frac{H_i s\,s^T H_i}{s^T H_i s}\right)
+        + \frac{y_i y_i^T}{s^T y_i} + (s^T y_i)\, w_i w_i^T.
+    \]
+    \item \textbf{PSB} (Powell-Symmetric-Broyden \cite{Powell1970}): a
+    rank-two update that does not preserve positive definiteness (like
+    SR1),
+    \[
+        H_i \leftarrow H_i + \frac{(y_i - H_i s)s^T + s(y_i - H_i s)^T}{s^T s}
+        - \frac{s^T(y_i - H_i s)}{(s^T s)^2}\, s s^T.
+    \]
+\end{itemize}
 
 \begin{table}[htbp]
 \centering
@@ -145,7 +219,7 @@ criterion, even though both reach practically the same objective value
 ($f \approx 1.5286$) and gradient norm. For this reason, PSB is the best
 choice between the two approaches when weighing cost against benefit.
 
-FFJM2 (PSB) uses persistent decaying $\mu$, a full Hessian reset on a bad
+FFJM2 (PSB) uses persistent decaying $\sigma$, a full Hessian reset on a bad
 ratio, and $-\nabla f$+Armijo at $k=0$ and as a safeguard. The following
 table compares it against BFGS with backtracking line search on the 34
 MGH least-squares problems.
@@ -271,19 +345,9 @@ MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & gradient \\
 \end{longtable}
 
 \noindent
-With this run, FFJM2 (PSB) no longer certifies Step/Function convergence on
-MGH10 and MGH16, or Function convergence on MGH31: all three now stop
-under \textbf{Stalled} instead, meaning the regularization parameter hit
-its ceiling before a step could be accepted. In every case the final
-objective value $f$ is essentially unchanged from the previous run
-(MGH10: $4.397293\times10^1$; MGH16: $4.291110\times10^4$; MGH31:
-$1.528639\times10^0$, all matching to 6 significant figures), and the
-gradient norm is, if anything, smaller than before --- so the iterate
-itself is not worse, only the exit status is: the method now keeps trying
-(and re-growing the regularization parameter) past the point where it
-previously accepted a stall as final, until it exhausts its regularization
-budget instead. BFGS is unaffected on all three (still Step/Function/Gradient,
-respectively, with essentially the same $f$ and $\|\nabla f\|$ as before).
+Is possible to see, the results of objective function aren't to diferent with two appraochs. But, the number of function and gradiente evaluation are really different. Is important to see, the MGH10 problem is really dificult to solve, but ffjm2 found a smaller gradient norm than BFGS approach. And the MGH18, ffjm found a much smaller objective function.
+
+
 
 The boxplot below compares the performance of the two approaches. It was
 not regenerated for this update: its data selection already restricts to
@@ -304,6 +368,8 @@ by it.
         {*}; $p < 0.01$: {**}; $p < 0.001$: {***}).}
     \label{fig:boxplot-ffjm2-bfgs}
 \end{figure}
+
+\FloatBarrier
 
 As Figure~\ref{fig:boxplot-ffjm2-bfgs} shows, the objective function values
 are not very different between the two methods: the p-value confirms
@@ -473,8 +539,9 @@ average, not $10\times$. All three land on the same $f$ statistics, again
 driven by the legitimately large-residual MGH16/MGH06 rather than any
 failure. This is exactly the effect anticipated when this experiment was
 designed (\texttt{teste.jl}): FFJM2's own outer loop --- the ratio test
-that rejects a bad step and grows $\mu$, and the full Hessian reset that
-follows a bad ratio (see the discussion of $\mu$ in the Introduction)
+that rejects a bad step and grows $\sigma$, and the full Hessian reset that
+follows a bad ratio (see the discussion of $\sigma$ in
+Section~\ref{sec:mgh-problems})
 --- compensates for a mediocre subproblem solution, so a weaker
 \texttt{model\_solver} costs a few extra outer iterations rather than
 failing outright. FFJM2 still defaults to Ipopt --- tied with BFGS on
@@ -533,35 +600,49 @@ Consequently, the spatial distribution of $n_g(x)$, discretized over a suitable 
  Furthermore, to ensure physically plausible results, minimal variation will be required for a function $n_g(x)$ that minimizes
  spatial oscillations while fitting the solution of the Saint-Venant equations to the observations.
 
- Based on this, is possiblem consider we have a function genereted by the PDE solution $Z(\eta) = 
- [z_1(x_1, t_1, \eta), z_2(x_2, t_2, \eta), \ldots, z_{n_{obs}}(x_\nu, t_\nu, \eta)]^T$,
- $\overline{z} = [z_{obs}(x_1, t_1), z_{obs}(x_2, t_2u), \ldots, z_{obs}(x_{n_{obs}}, t_{n_{obs}})]^T$ we want to find $\eta$ 
- as solving a sistem of problems given for $F(\eta) = Z(\eta) - z = 0$.
+Following the notation of Section~3 --- reusing $x$ for this new, unrelated
+role as the vector of unknowns, distinct from the spatial coordinate used
+above --- collect the $n$ discretized values of $n_g$ into a parameter
+vector $x \in \IR^n$. For $i = 1, \ldots, m$ (with $m = n_{obs}$),
+let $z_i(x)$ denote the surface elevation the Saint-Venant solution
+predicts, for parameter vector $x$, at the $i$-th observation's location
+and time $(x_i, t_i)$, and let $z_{obs,i} = z_{obs}(x_i, t_i)$ be the
+corresponding observation. Exactly as in Section~3, define the residual
+components $f_i(x) = z_i(x) - z_{obs,i}$, collect them into $F(x) =
+(f_1(x), \ldots, f_m(x))^T$, and minimize
+\[
+    f(x) = \frac12\|F(x)\|_2^2 = \frac12\sum_{i=1}^m f_i(x)^2.
+\]
+Calibrating $n_g$ against the observations is thus the nonlinear
+least-squares problem of finding $x$ that minimizes $f(x)$ (ideally
+$F(x) = 0$, though the real data need not be exactly consistent with the
+model).
 
-To calibrate $n_g(x)$ against this residual, four benchmark scenarios
-compare the same three solvers used throughout this report --- BFGS
-(backtracking, order 2), BOBYQA, and \texttt{ffjm2} --- applied directly to
-$F(\eta)$ above, exactly as in Table~\ref{tab:subproblem-solvers} (each
-solver stands in as the whole optimizer, not as \texttt{ffjm2}'s internal
-subproblem solver). Two scenarios are \emph{twin} experiments, where the
-reference $z_{obs}$ is itself generated by the model at a known
-$\eta^\star$, so the true minimizer is known exactly; the other two use the
-real observed data $z_{obs}$, where the true minimizer (if it exists) is
-unknown. BFGS and BOBYQA minimize the boxed, penalized sum of squares
-$\|F(\eta)\|^2 + \mathrm{penalty}(\eta)$ (box $[0,0.5]^{n_{grid}}$, penalty
-weight $10^6$); \texttt{ffjm2} minimizes the unpenalized
-$\frac12\|F(\eta)\|^2$ directly, so its $f$ column below is, on runs where
+To calibrate $x$ against this residual, four benchmark scenarios compare
+the same three solvers used throughout this report --- BFGS (backtracking,
+order 2), BOBYQA, and \texttt{ffjm2} --- applied directly to $F(x)$ above,
+in the same way as Table~\ref{tab:subproblem-solvers}: each solver stands
+in as the whole optimizer, rather than as \texttt{ffjm2}'s internal
+subproblem solver. Two scenarios are \emph{twin} experiments, where the
+observations $z_{obs,i}$ are themselves generated by the model at a known
+$x^\star$, so the true minimizer is known exactly; the other two use the
+real observed data, where the true minimizer (if it exists) is unknown.
+BFGS and BOBYQA minimize the boxed, penalized sum of squares
+$\|F(x)\|_2^2 + \mathrm{penalty}(x)$ (box $[0,0.5]^n$, penalty weight
+$10^6$); \texttt{ffjm2} minimizes the unpenalized $f(x) =
+\frac12\|F(x)\|_2^2$ directly, so its $f$ column below is, on runs where
 the box constraint is inactive, exactly half of the other two methods' ---
-e.g.\ real dim.\ 3 below, where all three reach the same minimizer up to
-rounding: $f\approx1.0085$ for BFGS/BOBYQA versus $f\approx0.5043$ for
+e.g.\ real data, $n=3$, below, where all three reach the same minimizer up
+to rounding: $f\approx1.0085$ for BFGS/BOBYQA versus $f\approx0.5043$ for
 \texttt{ffjm2}. RMSD is recomputed uniformly from the raw (unpenalized)
-residual at each method's minimizer, so it is directly comparable across
-all rows of every table below.
+residual, $\mathrm{RMSD}(x) = \|F(x)\|_2/\sqrt{m}$, at each method's
+minimizer, so it is directly comparable across all rows of every table
+below.
 
 \begin{table}[htbp]
 \centering
-\caption{Twin experiment, dimension 2: $\eta^\star=(0.20,\,0.15)$,
-    $\eta^0=(0.09,\,0.09)$.}
+\caption{Twin experiment, $n=2$: $x^\star=(0.20,\,0.15)$,
+    $x^0=(0.09,\,0.09)$.}
 \label{tab:twin-dim2}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -578,14 +659,14 @@ ffjm2 & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36\times10^{-13}$ & 11 
 
 \noindent
 All three methods converge to essentially the exact reference
-$\eta^\star=(0.20,0.15)$; \texttt{ffjm2} is the cheapest of the three by
+$x^\star=(0.20,0.15)$; \texttt{ffjm2} is the cheapest of the three by
 every cost measure (fewest evaluations, least time) despite also reaching
 the tightest gradient norm and RMSD.
 
 \begin{table}[htbp]
 \centering
-\caption{Twin experiment, dimension 10: decreasing profile $\eta^\star$
-    from $0.12$ to $0.07$, $\eta^0=(0.09,\ldots,0.09)$. (Increasing profiles
+\caption{Twin experiment, $n=10$: decreasing profile $x^\star$
+    from $0.12$ to $0.07$, $x^0=(0.09,\ldots,0.09)$. (Increasing profiles
     over the same range were tested manually and diverge before
     $t_{\max}=31$; only decreasing profiles are stable.)}
 \label{tab:twin-dim10}
@@ -603,16 +684,16 @@ ffjm2 & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89\times10^{-11}$ & 29 
 \end{table}
 
 \noindent
-At dimension 10 the gap between \texttt{ffjm2} and the other two widens
-sharply: it reaches a gradient norm roughly $7$ orders of magnitude smaller
-than BFGS or BOBYQA, using about $7$--$35\times$ fewer function evaluations
+At $n=10$ the gap between \texttt{ffjm2} and the other two widens sharply:
+it reaches a gradient norm roughly $7$ orders of magnitude smaller than
+BFGS or BOBYQA, using about $7$--$35\times$ fewer function evaluations
 and $10$--$13\times$ less wall-clock time. BOBYQA exhausts its
 $1000$-evaluation budget without reaching the gradient criterion
 (\texttt{MAXEVAL\_REACHED}, \texttt{converged=false}).
 
 \begin{table}[htbp]
 \centering
-\caption{Real data, dimension 3: $\eta^0=(0.09,0.09,0.09)$.}
+\caption{Real data, $n=3$: $x^0=(0.09,0.09,0.09)$.}
 \label{tab:real-dim3}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -635,9 +716,9 @@ of $2$ (discussed above) is accounted for. \texttt{ffjm2} again reaches by
 far the smallest gradient norm --- roughly three orders of magnitude below
 BFGS --- at an evaluation count and wall-clock time comparable to BFGS.
 
-\begin{table}[htbp]
+\begin{table}[H]
 \centering
-\caption{Real data, dimension 10: $\eta^0=(0.09,\ldots,0.09)$.}
+\caption{Real data, $n=10$: $x^0=(0.09,\ldots,0.09)$.}
 \label{tab:real-dim10}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -656,15 +737,15 @@ ffjm2 & \multicolumn{7}{l}{not available in this run} \\
 This is the hardest of the four scenarios. BFGS's backtracking line search
 stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with a
 gradient norm still at $\sim1.19\times10^6$, many orders of magnitude away
-from a stationary point, despite the lower evaluation count and time of
-the two completed runs. BOBYQA reports \texttt{SUCCESS} and reaches the
-lowest RMSD ($4.64\times10^{-2}$), but needs $840$ evaluations and
-$\approx2.9$h of wall-clock time to get there. \texttt{ffjm2} was not run
-(or did not complete) for this scenario; that row is left for a future
-update once \texttt{comparar\_solvers\_real\_dim10} has been re-run with it
-included.
+from a stationary point, despite needing fewer evaluations and less time
+than BOBYQA. BOBYQA reports \texttt{SUCCESS} and reaches the lowest RMSD
+($4.64\times10^{-2}$), but needs $840$ evaluations and $\approx2.9$h of
+wall-clock time to get there. \texttt{ffjm2} was not run (or did not
+complete) for this scenario; that row is left for a future update once
+\texttt{comparar\_solvers\_real\_dim10} has been re-run with it included.
 
 
+\clearpage
 \begin{thebibliography}{9}
 
 \bibitem{DennisWolkowicz1993}

@@ -7,10 +7,14 @@ pgfplotsx()
 
 # ==============================================================================
 # Boxplot de três painéis (função objetivo, avaliações de função, avaliações
-# de gradiente) comparando dois métodos nos problemas MGH, restrito às
-# execuções com `status == "gradient_converged"` — a mesma figura gerada
-# anteriormente para comparar `ffjm2` com BFGS
-# (`results/boxplot_gradient_converged_ffjm2_psb_bfgs_mgh.png`).
+# de gradiente) comparando dois métodos nos problemas MGH. Por padrão
+# restrito às execuções com `status == "gradient_converged"` — a mesma
+# figura gerada anteriormente para comparar `ffjm2` com BFGS
+# (`results/boxplot_gradient_converged_ffjm2_psb_bfgs_mgh.png`) — mas o novo
+# argumento `status_filter` (ver docstring de `boxplot_ffjm2_vs_bfgs_mgh`)
+# permite incluir também os problemas que pararam por Step/Function/Stalled,
+# ou seja, TODOS os 34 problemas MGH, não só o subconjunto onde os dois
+# métodos convergem por gradiente.
 #
 # Não recomputa nada: lê resultados já calculados, de um CSV no formato
 # escrito por `comparar_ffjm2_bfgs_mgh`/`comparar_ffjm2_modelos_mgh`
@@ -141,12 +145,24 @@ end
     boxplot_ffjm2_vs_bfgs_mgh(; rows=nothing, csv_path=nothing,
                                  method_a="ffjm2_psb", method_b="bfgs_backtracking2",
                                  label_a="FFJM2 (PSB)", label_b="BFGS (backtracking)",
+                                 status_filter="gradient_converged",
                                  output="results/boxplot_gradient_converged_ffjm2_vs_bfgs_mgh.png")
 
 Reproduz o boxplot de três painéis (função objetivo, avaliações de função,
 avaliações de gradiente) comparando dois métodos (colunas `method` de um CSV
-MGH: `method_a` vs `method_b`) nos problemas MGH, restrito às execuções com
-`status == "gradient_converged"` em ambos.
+MGH: `method_a` vs `method_b`) nos problemas MGH.
+
+Por padrão (`status_filter = "gradient_converged"`), restringe às execuções
+com `status == "gradient_converged"` em ambos — reproduzindo a figura
+original, que por isso NÃO considera todos os 34 problemas: qualquer
+problema em que `method_a` ou `method_b` tenha parado por Step, Function ou
+Stalled (ex.: MGH10, MGH16, MGH31 do lado do FFJM2) fica de fora dos dois
+grupos. Passe `status_filter=nothing` para desligar esse filtro e incluir
+TODOS os problemas presentes no CSV para cada método, com qualquer status
+final — é o jeito de ver as duas figuras lado a lado e conferir a
+diferença que a restrição por convergência de gradiente faz. Também aceita
+uma string diferente (ex.: `"step"`) para restringir a outro status
+específico.
 
 Não computa nada: os dados vêm de resultados já calculados, informados por
 `rows` (vetor de `NamedTuple`s, ex.: o campo `rows` devolvido por
@@ -168,6 +184,7 @@ function boxplot_ffjm2_vs_bfgs_mgh(;
     method_b::AbstractString = "bfgs_backtracking2",
     label_a::AbstractString = "FFJM2 (PSB)",
     label_b::AbstractString = "BFGS (backtracking)",
+    status_filter::Union{AbstractString,Nothing} = "gradient_converged",
     output::Union{AbstractString,Nothing} = "results/boxplot_gradient_converged_ffjm2_vs_bfgs_mgh.png",
 )
     if rows === nothing
@@ -175,12 +192,13 @@ function boxplot_ffjm2_vs_bfgs_mgh(;
         rows = _read_mgh_csv(csv_path)
     end
 
-    converged = filter(r -> r.status == "gradient_converged", rows)
-    rows_a = filter(r -> r.method == method_a, converged)
-    rows_b = filter(r -> r.method == method_b, converged)
+    selected = status_filter === nothing ? rows : filter(r -> r.status == status_filter, rows)
+    rows_a = filter(r -> r.method == method_a, selected)
+    rows_b = filter(r -> r.method == method_b, selected)
 
-    isempty(rows_a) && error("Nenhuma linha de method == \"$method_a\" com status gradient_converged.")
-    isempty(rows_b) && error("Nenhuma linha de method == \"$method_b\" com status gradient_converged.")
+    status_desc = status_filter === nothing ? "." : " com status $status_filter."
+    isempty(rows_a) && error("Nenhuma linha de method == \"$method_a\"$status_desc")
+    isempty(rows_b) && error("Nenhuma linha de method == \"$method_b\"$status_desc")
 
     labels = (label_a, label_b)
 
