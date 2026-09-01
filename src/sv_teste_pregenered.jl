@@ -1006,7 +1006,7 @@ function sidpsm_puro_penalizado_pregerado(
 end
 
 # ==============================================================================
-# Comparação de BFGS, BOBYQA, MADS e ffjm2 num único chute inicial —
+# Comparação de BFGS, BOBYQA e ffjm2 num único chute inicial —
 # experimento gêmeo (`*_pregerado`) ou dados reais (`ffjm2.jl`). As métricas
 # (RMSD, gradient_norm) são recalculadas de forma uniforme a partir do
 # resíduo bruto (sem penalidade) no minimizador de cada método, para
@@ -1015,7 +1015,7 @@ end
 # `comparar_bfgs_spg_bobyqa_mads`/`comparar_ffjm2_bfgs` (`ffjm2.jl`).
 #
 # ffjm2 minimiza `raw_residual` diretamente (sem `sv_box_penalty`), igual ao
-# uso de `ffjm2` em `comparar_ffjm2_bfgs` — os outros três solvers usam a
+# uso de `ffjm2` em `comparar_ffjm2_bfgs` — os outros dois solvers usam a
 # penalidade de caixa nativamente ou via `sv_box_penalty` (ver docstring de
 # cada `*_puro_penalizado*`).
 # ==============================================================================
@@ -1078,7 +1078,7 @@ end
 """
     comparar_solvers_pregerado(x_otimo, x0; kwargs...)
 
-Compara BFGS, BOBYQA, MADS (`*_puro_penalizado_pregerado`,
+Compara BFGS, BOBYQA (`*_puro_penalizado_pregerado`,
 `sv_teste_pregenered.jl`) e `ffjm2` no experimento gêmeo definido por
 `x_otimo` (mesma convenção de [`bfgs_puro_penalizado_pregerado`](@ref):
 `x_otimo` gera os dados de referência via `sv_fork_dados_pregerados`, `x0` é
@@ -1087,8 +1087,8 @@ os dados de referência (`sv_fork_dados_pregerados`) independentemente — uma
 simulação "verdade" extra por solver, negligenciável frente ao custo dos
 `f_calls_limit` avaliações de cada otimização.
 
-`f_calls_limit`/`maxiter` controlam o orçamento de avaliações de BFGS,
-BOBYQA e MADS; `ffjm2_maxiter` controla o número de iterações
+`f_calls_limit`/`maxiter` controlam o orçamento de avaliações de BFGS e
+BOBYQA; `ffjm2_maxiter` controla o número de iterações
 externas de `ffjm2` (cada uma custando ao menos 1 avaliação de resíduo, mais
 em caso de rejeição por μ). O resultado é salvo em `output` (CSV) e também
 devolvido em `rows`.
@@ -1126,9 +1126,6 @@ function comparar_solvers_pregerado(
         ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
             x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
         )),
-        ("MADS", () -> mads_puro_penalizado_pregerado(
-            x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
-        )),
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
@@ -1144,8 +1141,8 @@ end
 """
     comparar_solvers_real(x0; kwargs...)
 
-Compara BFGS (`bfgs_puro_penalizado`), BOBYQA (`bobyqa_puro_penalizado`),
-MADS (`mads_puro_penalizado`) e `ffjm2` sobre dados reais
+Compara BFGS (`bfgs_puro_penalizado`), BOBYQA (`bobyqa_puro_penalizado`)
+e `ffjm2` sobre dados reais
 (`sv_fork_assimilation`, `ffjm2.jl`) — mesma ideia de
 [`comparar_solvers_pregerado`](@ref), mas sem `x_otimo` (não é experimento
 gêmeo). `bfgs_puro_penalizado` ignora `tbeg`/`tend` (fixos em `0.0`/`31.0`
@@ -1182,9 +1179,6 @@ function comparar_solvers_real(
         ("BOBYQA", () -> bobyqa_puro_penalizado(
             x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
         )),
-        ("MADS", () -> mads_puro_penalizado(
-            x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
-        )),
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
@@ -1198,10 +1192,10 @@ function comparar_solvers_real(
 end
 
 # ==============================================================================
-# Presets dos 4 cenários de comparação (BFGS/BOBYQA/MADS/ffjm2)
+# Presets dos 4 cenários de comparação (BFGS/BOBYQA/ffjm2)
 # discutidos na sessão: experimento gêmeo em dimensão 2 e 10, e dados reais em
-# dimensão 3 e 10. Mesma ideia de `mads_two_dim_problem`/`bobyqa_full_dim_problem`
-# (`MADS_application.jl`/`BOBYQA_application.jl`): parâmetros fixos por cima
+# dimensão 3 e 10. Mesma ideia de `bobyqa_full_dim_problem`
+# (`BOBYQA_application.jl`): parâmetros fixos por cima
 # de um executor genérico (`comparar_solvers_pregerado`/`comparar_solvers_real`).
 #
 # Orçamento reduzido (`f_calls_limit=100`, `maxiter=30`, `g_calls_limit=30`,
