@@ -1,0 +1,155 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=2cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\newcommand{\IR}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+
+\title{Why a Steepest-Descent Line Search at $k=0$ is Consistent with\\
+\emph{Minimization of expensive functions in the presence of forbidden
+regions}}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{The degeneracy at $k=0$}
+
+\texttt{ffjm2} minimizes $f(x) = \tfrac12\norm{F(x)}^2$, where
+$F=(f_1,\dots,f_m)^\top$ is the residual vector. At external iteration $k$
+it keeps one symmetric matrix $H_i^k$ per residual component $f_i$,
+approximating $\nabla^2 f_i(x^k)$, and solves
+\begin{equation}
+    M_k(s) \;=\; \sigma\norm{s}^2 + \tfrac12\sum_i q_i(s)^2, \qquad
+    q_i(s) = f_i(x^k) + \nabla f_i(x^k)^\top s + \tfrac12 s^\top H_i^k s,
+    \label{eq:quartic}
+\end{equation}
+accepting or rejecting $x^k+s$ by the ratio between actual and predicted
+reduction, and growing/shrinking $\sigma$ accordingly (this is the
+regularization scheme of Algorithm 4.1 of \cite{FortunatoMartinez2026},
+implemented in \texttt{ffjm2} with an empirical persistent-$\sigma$
+variant --- the paper resets $\sigma\leftarrow0$ at the start of every
+iteration and never shrinks it, but persisting it between iterations and
+shrinking it on acceptance performed better in practice).
+
+At $k=0$, every $H_i^0=0$ (no secant pair has been observed yet), so
+\eqref{eq:quartic} collapses to
+\begin{equation}
+    M_0(s) = \sigma\norm{s}^2 + \tfrac12\sum_i \bigl(f_i(x^0) + \nabla f_i(x^0)^\top s\bigr)^2,
+    \label{eq:gn}
+\end{equation}
+a single damped Gauss--Newton subproblem. Two things are worth noting
+about this particular instance of the subproblem:
+\begin{enumerate}
+    \item Unlike every subsequent iteration, $\sigma=\sigma_0$ here is a
+    fixed constant, not yet informed by any accept/reject test on
+    \emph{this} problem. Whether it makes \eqref{eq:gn} behave like
+    Gauss--Newton ($\sigma\to0$) or like scaled steepest descent
+    ($\sigma\to\infty$, where the minimizer of \eqref{eq:gn} is
+    asymptotically parallel to $-\nabla f(x^0)$) is essentially a guess
+    about the local curvature scale of $f$ at $x^0$ that the method has
+    had no chance to calibrate yet.
+    \item There is, by construction, no curvature information at all to
+    justify solving a quartic (rather than a quadratic) model here: the
+    quartic term $\tfrac12 s^\top H_i^k s$ is identically zero for every
+    $i$.
+\end{enumerate}
+So the very first step is the one iteration where the method's own
+machinery (quasi-Newton curvature, calibrated regularization) has nothing
+to work with.
+
+\section{A self-contained argument: the closed form of $M_0$}
+\label{sec:closedform}
+
+Rather than appealing to a different algorithm, the cleanest justification
+comes directly out of \eqref{eq:gn} itself, which is an unconstrained,
+strictly convex quadratic in $s$ and can be solved in closed form. Write
+$J:=F'(x^0)$ for the Jacobian of $F$ at $x^0$ (the matrix whose $i$-th row
+is $\nabla f_i(x^0)^\top$), so that $g:=\nabla f(x^0)=J^\top F(x^0)$, and
+$A:=J^\top J$ (symmetric positive semidefinite). Then
+\[
+    \nabla_s M_0(s) = (2\sigma I + A)\,s + g = 0
+    \quad\Longrightarrow\quad
+    s(\sigma) = -(A+2\sigma I)^{-1} g.
+\]
+
+\textbf{Lemma A (descent for every $\sigma>0$).} Since $A+2\sigma I \succ
+0$ for $\sigma>0$, its inverse is symmetric positive definite, hence
+\[
+    g^\top s(\sigma) = -g^\top (A+2\sigma I)^{-1} g < 0 \qquad \text{whenever } g\ne0.
+\]
+So $s(\sigma)$ is a genuine descent direction for $f$ \emph{for every
+$\sigma>0$}, not just asymptotically --- the $\sigma$-loop never has a
+``wrong-direction'' problem at $k=0$; what it can have is a
+badly-\emph{sized} step, which is what the accept/reject test and the
+growth of $\sigma$ are actually correcting for.
+
+\textbf{Proposition B (alignment with $-g$ as $\sigma\to\infty$).} Factor
+$2\sigma$ out of the inverse:
+\[
+    s(\sigma) = -(A+2\sigma I)^{-1}g
+    = -\frac{1}{2\sigma}\left(I + \frac{A}{2\sigma}\right)^{-1}g.
+\]
+As $\sigma\to\infty$, $A/(2\sigma)\to0$, and matrix inversion is
+continuous at the identity, so $\bigl(I+A/(2\sigma)\bigr)^{-1}\to I$.
+Hence
+\begin{equation}
+    s(\sigma) = -\frac{1}{2\sigma}\,g + o\!\left(\frac1\sigma\right)
+    \qquad\Longrightarrow\qquad
+    \frac{s(\sigma)}{\norm{s(\sigma)}} \longrightarrow -\frac{g}{\norm{g}}
+    \quad\text{as } \sigma\to\infty.
+    \label{eq:asymptotic}
+\end{equation}
+
+In words: \emph{for $\sigma$ large enough, the solution of the degenerate
+$k=0$ subproblem \eqref{eq:gn} already is, to leading order, a
+steepest-descent step of length $\approx1/2\sigma$} --- the two are
+asymptotically the same computation. This is a direct consequence of
+\eqref{eq:gn}'s own closed form, entirely internal to Algorithm 4.1.
+
+In practice, the rejection ladder $\sigma_0,\ \sigma_{j+1}=\gamma\sigma_j$
+($\gamma>1$ the growth factor) tries $s(\sigma_0), s(\sigma_1),\dots$
+until one is accepted. By Proposition B, once $\sigma_j\gg\norm{A}/2$ the
+successive trials are already essentially parallel to $-g$ and shrink by
+the fixed factor $1/\gamma$ --- so once it reaches that scale, the ladder
+is already behaving like a geometric backtracking line search along $-g$.
+Below that scale, though --- which includes $\sigma_0$ itself whenever
+$\sigma_0$ (a fixed constant, unrelated to the problem at hand) is not
+already $\gg\norm{A}/2$ --- $s(\sigma_0)$ is a perfectly valid descent
+direction (Lemma A) but generally \emph{not} aligned with $-g$, and its
+length is not calibrated to $\norm{g}$ at all: whether it is accepted on
+the first try is essentially a coincidence of scale, not a controlled
+property of the method.
+
+Replacing the $k=0$ subproblem by an explicit Armijo line search along
+$-g$ therefore does not change what the method is doing once $\sigma$ is
+large --- it is, to leading order, the same computation. What it removes
+is the uncalibrated, possibly wasted, low-$\sigma$ rejections at the start
+of the ladder, by searching directly along the direction
+\eqref{eq:asymptotic} shows the ladder is heading toward anyway, with a
+step-length search (quadratic interpolation) that is more
+sample-efficient than a fixed geometric factor $1/\gamma$. It is also
+computationally cheaper: each rejected $\sigma$ in the ladder re-invokes
+the general-purpose numerical solver used for the full quartic subproblem
+(which explores several random restarts to guard against spurious local
+minima), even though at $H_i=0$ the subproblem has the trivial closed
+form $s(\sigma)=-(A+2\sigma I)^{-1}g$ above --- a backtracking line search
+only needs cheap residual evaluations $F(x^0+\alpha p)$ to test
+sufficient decrease.
+
+
+\begin{thebibliography}{9}
+
+\bibitem{FortunatoMartinez2026}
+F. A. Fortunato and J. M. Mart\'inez, \emph{Minimization of expensive
+functions in the presence of forbidden regions}, unpublished manuscript,
+2026. (\texttt{\_research/ffjm2.pdf} in this repository.)
+
+\end{thebibliography}
+
+\end{document}

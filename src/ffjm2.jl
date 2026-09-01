@@ -23,6 +23,15 @@ if !isdefined(@__MODULE__, :spg_box)
     include("teste2.jl")
 end
 
+# `SidPsm` (busca padrão livre de derivada com direções geradas por
+# derivadas de simplex) vive em `tmp/SidPsm.jl` em vez de `src/` — ver
+# `[[sv_teste_pregenered.jl]]` para a mesma convenção (referenciar sempre
+# como `SidPsm.<nome>`, nunca `using .SidPsm`, para não colidir com nomes
+# genéricos como `Problem`/`Parameters`).
+if !isdefined(@__MODULE__, :SidPsm)
+    include(joinpath(@__DIR__, "..", "tmp", "SidPsm.jl"))
+end
+
 struct GeometricBackTracking{T} <: LineSearches.AbstractLineSearch
     c1::T
     rho::T
@@ -147,14 +156,21 @@ O ponto `x+d` é aceito pela razão entre redução real e prevista
 (usando só a parte `½Σqᵢ²` de `Mₖ`, sem o termo `μ‖d‖²`, que amortece o
 subproblema mas não faz parte do modelo de `f` propriamente dito). `μ`
 **persiste entre iterações externas**: a primeira iteração começa em
-`μ=mu_initial` (padrão `1.0`); cada iteração seguinte tenta primeiro o `μ`
-deixado pela anterior, em vez de reiniciar do zero. Se `ρₖ ≥ ratio_eta1`, o
-passo é aceito e `μ` decresce (dividido por `mu_grow`, com piso `mu_min`)
-para servir de ponto de partida à próxima iteração — comportamento
-observado como melhor empiricamente do que reiniciar `μ=0` a cada iteração.
-Caso contrário, `μ` é multiplicado por `mu_grow` e o subproblema é resolvido
-de novo, repetindo até um passo ser aceito ou até `μ` ultrapassar `mu_max`
-(ou o número de tentativas passar de `max_mu_increases`).
+`μ=mu_initial` (padrão `0.0` — primeira tentativa sem amortecimento nenhum,
+Gauss-Newton puro); cada iteração seguinte tenta primeiro o `μ` deixado pela
+anterior, em vez de reiniciar do zero. Se `ρₖ ≥ ratio_eta1`, o passo é
+aceito e `μ` decresce (dividido por `mu_grow`, com piso `mu_min`) para
+servir de ponto de partida à próxima iteração. Caso contrário, `μ` cresce:
+se estava em `0`, passa a `1` (multiplicar `0` por `mu_grow` o manteria
+preso em `0` para sempre); daí em diante é multiplicado por `mu_grow` a cada
+nova rejeição (`1`, `10`, `100`, ... com o `mu_grow` padrão), e o
+subproblema é resolvido de novo, repetindo até um passo ser aceito ou até
+`μ` ultrapassar `mu_max` (ou o número de tentativas passar de
+`max_mu_increases`). Este esquema é uma variação empírica do Algoritmo 4.1
+de `_research/ffjm2.pdf` — o artigo reinicia `σ ← 0` a cada iteração
+(Step 1) e nunca a encolhe, mas persistir `μ` entre iterações e encolhê-lo
+por `mu_grow` deu melhor resultado nos testes com os problemas MGH (ver
+`[[ffjm2_mu_scheme]]`).
 
 A cada rejeição (`ρₖ < ratio_eta1`), além de crescer `μ`, a Hessiana
 `H[model]` do modelo vencedor daquela tentativa (`model = direction_source`,
@@ -174,23 +190,30 @@ recém-reiniciados deixaria a disputa sem nenhum candidato (só há um modelo
 em `update`, ou todos foram reiniciados na iteração anterior), o banimento é
 ignorado e todos voltam a competir imediatamente.
 
-A iteração `k=0` **nunca** passa pelo subproblema em `μ`: como nenhum
-`H[model]` foi construído ainda (todas começam em zero), o primeiro passo é
-sempre `-∇f(x₀)` com busca linear de Armijo por `fallback_linesearch`
-(padrão `LineSearches.BackTracking(order = 3)`), e é o par `(s,y)` desse
-passo que inicializa de fato as Hessianas em cada `H[model]`.
+A iteração `k=0` **não** passa pelo subproblema em `μ` das demais (desvio
+deliberado do Algoritmo 4.1 de `_research/ffjm2.pdf`, que não distingue a
+primeira iteração): como nenhum `H[model]` foi construído ainda, a direção
+usada é a de máxima descida (`-∇f`), com o passo escolhido por busca linear
+de backtracking por interpolação quadrática
+(`LineSearches.BackTracking(order=2)`, protocolo direto de 4 argumentos
+`linesearch(ϕ, α₀, φ₀, φ'₀)`, mesmo usado por `bfgs_puro_armijo`). A busca
+linear já garante decréscimo suficiente, então o passo é sempre aceito —
+`μ` não é tocado nesta iteração (permanece em `mu_initial` para a
+iteração 1). É o par `(s,y)` desse primeiro passo aceito que inicializa de
+fato as Hessianas em cada `H[model]`, exatamente como faria o primeiro
+passo aceito do esquema em `μ` (ver 2.3.2 no código).
 
-Da iteração `k=1` em diante, se a busca em `μ` (com os resets de modelo) se
-esgotar sem um passo aceito, usa-se essa mesma direção `-∇f(xₖ)`+Armijo como
-salvaguarda antes de desistir — evita parar prematuramente quando o modelo
-quártico local está mal condicionado mas o gradiente negativo ainda é uma
-direção de descida válida. Só se essa busca linear também falhar (ou
-`-∇f(xₖ)` não for direção de descida, ou seja `∇f(xₖ)ᵀ(-∇f(xₖ)) ≥ 0`, o que
-só ocorre com gradiente nulo) a iteração externa para com
-`status = :regularization_stalled`. Um passo aceito por essa via (em `k=0`
-ou como salvaguarda) não informa o amortecimento do modelo quártico (não
-veio dele), então `μ` não decresce nessa iteração — fica como estava para a
-próxima tentativa.
+A partir de `k=1`, se a busca em `μ` (com os resets de modelo) se esgotar
+sem um passo aceito — `μ` ultrapassar `mu_max` ou o número de tentativas
+passar de `max_mu_increases` — a iteração externa para imediatamente com
+`status = :regularization_stalled`, sem nenhuma salvaguarda por busca
+linear: diferente do Algoritmo 2.1 (seção 2 do mesmo documento) e da
+iteração `k=0` acima, o subproblema em `μ` do Algoritmo 4.1 não usa
+backtracking nem uma direção `-∇f` alternativa — ele só cresce `σ` (`μ`,
+aqui) até aceitar um passo, o que o Teorema 4.1 garante ocorrer em tempo
+finito para o subproblema exato. `max_mu_increases` e `mu_max` existem só
+como salvaguarda computacional desta implementação (número finito de
+tentativas por iteração externa), não como parte do algoritmo original.
 
 `F` deve receber um vetor e devolver diretamente um vetor de resíduos.
 Se `jacobian` não for fornecida, a Jacobiana é calculada com
@@ -209,10 +232,8 @@ O retorno é um `NamedTuple` com os campos `minimizer`, `minimum`,
 `total_function_evaluation_time_seconds`,
 `total_gradient_evaluation_time_seconds`, `rejected_directions` (passos
 rejeitados pelo teste de razão), `model_resets` (quantas vezes a Hessiana de
-um modelo foi zerada por completo após uma razão ruim, ver acima),
-`gradient_fallback_used` (quantas iterações `k>0` precisaram da salvaguarda
-`-∇f`+Armijo; não conta a iteração `k=0`, que sempre usa essa direção por
-construção) e `mu_history` (valor de `μ` ao final de cada iteração aceita).
+um modelo foi zerada por completo após uma razão ruim, ver acima) e
+`mu_history` (valor de `μ` ao final de cada iteração aceita).
 Os campos de tempo sem o prefixo `total_` representam o custo médio de uma
 chamada.
 """
@@ -227,18 +248,17 @@ function ffjm2(
     x_tol::Real = 0.0,
     f_rel_tol::Union{Nothing,Real} = 0.0,
     model_maxiter::Integer = 1000,
-    model_g_tol::Real = 1e-6,
-    model_multistart::Integer = 10,
+    model_g_tol::Real = 1e-12,
+    model_multistart::Integer = 100,
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
-    model_solver::Symbol = :ipopt,
+    model_solver::Symbol = :bfgs,
     mu_initial::Real = 1.0,
     mu_grow::Real = 10.0,
     mu_min::Real = 1e-8,
     mu_max::Real = 1e12,
-    ratio_eta1::Real = 0.1,
-    max_mu_increases::Integer = 30,
-    fallback_linesearch = LineSearches.BackTracking(order = 2),
+    ratio_eta1::Real = 0.01,
+    max_mu_increases::Integer = 10,
     gamma_bar::Real = 10.0,
     initial_scaling::Bool = false,
     update_tol::Real = sqrt(eps(Float64)),
@@ -263,11 +283,13 @@ function ffjm2(
         throw(ArgumentError("model_multistart deve ser pelo menos 1"))
     isfinite(model_start_spread) && model_start_spread >= 0 ||
         throw(ArgumentError("model_start_spread deve ser finito e não negativo"))
-    isfinite(mu_initial) && mu_initial > 0 ||
-        throw(ArgumentError("mu_initial deve ser finito e positivo"))
+    isfinite(mu_initial) && mu_initial >= 0 ||
+        throw(ArgumentError("mu_initial deve ser finito e não negativo"))
     mu_grow > 1 || throw(ArgumentError("mu_grow deve ser maior que 1"))
-    isfinite(mu_min) && 0 < mu_min <= mu_initial ||
-        throw(ArgumentError("mu_min deve ser finito, positivo e <= mu_initial"))
+    isfinite(mu_min) && mu_min > 0 && (mu_initial == 0 || mu_min <= mu_initial) ||
+        throw(ArgumentError(
+            "mu_min deve ser finito e positivo, e <= mu_initial quando mu_initial > 0",
+        ))
     isfinite(mu_max) && mu_max >= mu_initial ||
         throw(ArgumentError("mu_max deve ser finito e >= mu_initial"))
     0 < ratio_eta1 < 1 || throw(ArgumentError("ratio_eta1 deve pertencer a (0, 1)"))
@@ -348,7 +370,6 @@ function ffjm2(
     status = :maximum_iterations
     iterations = 0
     rejected_directions = 0
-    gradient_fallback_used = 0
     model_resets = 0
     model_solves = 0
     model_iterations = 0
@@ -414,8 +435,9 @@ function ffjm2(
         # (a que minimiza ∇f(xₖ)ᵀd) e testa a razão ρₖ; aumenta μ (repetindo
         # a resolução para todos os modelos) enquanto o passo for rejeitado.
         # μ persiste entre iterações externas (começa em `mu_initial`, ver
-        # 2.3.4): cada iteração tenta primeiro o μ deixado pela anterior, em
-        # vez de reiniciar do zero. Não roda em k=0 (ver comentário abaixo).
+        # 2.3.3): cada iteração tenta primeiro o μ deixado pela anterior, em
+        # vez de reiniciar do zero. Roda também em k=0 (ver comentário
+        # abaixo).
         mu_increases = 0
         accepted = false
         d = zeros(T, n)
@@ -426,100 +448,142 @@ function ffjm2(
         best_model_result = nothing
         ratio = T(NaN)
         reset_this_iteration = Set{Symbol}()
-        # Modelos reiniciados na iteração anterior não disputam a seleção de
-        # direção nesta iteração (ver `benched_models` acima). Se isso
-        # baniria todos os modelos de uma vez, ignora o banimento em vez de
-        # ficar sem candidato nenhum.
-        active_models = setdiff(models, benched_models)
-        isempty(active_models) && (active_models = models)
-        if show_trace && k > 0 && length(active_models) < length(models)
-            println("  Modelos de molho (reiniciados na iteração anterior): ", benched_models)
-        end
-        # Na iteração 0 não há Hessiana nenhuma ainda (H[model] começa em
-        # zero para todo `model`): pula direto para a salvaguarda de 2.3.3,
-        # que usa -∇f(x₀) com backtracking de Armijo. O primeiro par (s,y)
-        # dessa iteração é o que inicia de fato as Hessianas em 2.3.5.
-        while k > 0
-            best_directional_derivative = T(Inf)
-            best_direction = nothing
-            for model in active_models
-                model_result = _ffjm2_model_direction(
-                    r,
-                    J,
-                    H[model],
-                    mu,
-                    last_direction_norm,
-                    model_maxiter,
-                    model_g_tol,
-                    model_multistart,
-                    model_start_spread,
-                    model_seed + k,
-                    model_solver,
-                )
-                model_solves += 1
-                model_iterations += model_result.total_iterations
-                model_solve_time_seconds += model_result.solve_time_seconds
-                last_model_directions[model] = model_result.direction
-                if show_trace
-                    println(
-                        "  Subproblema ($model): μ = $mu | ", model_result.stop_reason,
-                        " | Mₖ(x̄) = ", model_result.minimum,
-                    )
-                end
-                dtg = dot(g, model_result.direction)
-                if all(isfinite, model_result.direction) && dtg < best_directional_derivative
-                    best_directional_derivative = dtg
-                    best_direction = model_result.direction
-                    best_model_result = model_result
-                    direction_source = model
-                end
+        if k == 0
+            # Primeira iteração externa: ainda não há Hessiana nenhuma
+            # (H[model] começa em zero para todo `model`), então em vez de
+            # resolver o subproblema quártico amortecido por μ (que aqui se
+            # reduziria a Gauss-Newton puro) usa a direção de máxima descida
+            # (-∇f) com busca linear de backtracking por interpolação
+            # quadrática (`LineSearches.BackTracking(order=2)`, mesma ordem
+            # usada por `Optim.BFGS(linesearch=...)` em
+            # `bfgs_puro_penalizado`), pelo protocolo direto de 4 argumentos
+            # `linesearch(ϕ, α₀, φ₀, φ'₀)` (mesmo usado em
+            # `bfgs_puro_armijo`). Como a busca linear já garante decréscimo
+            # suficiente (condição de Armijo), o passo é sempre aceito — não
+            # há razão ρₖ nem crescimento de μ nesta iteração. O par (s,y)
+            # deste passo ainda é o que inicializa as Hessianas de todos os
+            # modelos em 2.3.4, exatamente como faria o primeiro passo
+            # aceito do esquema antigo.
+            direction_source = :gradient_linesearch
+            p = -g
+            directional_derivative = dot(g, p)
+            gradient_linesearch = LineSearches.BackTracking(order = 2)
+            ϕ(α) = begin
+                trial_x = x .+ α .* p
+                trial_r = T.(residual(trial_x))
+                T(0.5) * dot(trial_r, trial_r)
             end
-            d = best_direction === nothing ? -g : best_direction
-            predicted_reduction = f -
-                (best_model_result === nothing ? f : best_model_result.minimum_unpenalized)
-
+            α, _ = try
+                gradient_linesearch(ϕ, one(T), f, directional_derivative)
+            catch err
+                err isa LineSearches.LineSearchException || rethrow()
+                status = :line_search_failed
+                iterations = k
+                break
+            end
+            d = α .* p
             xnew = x .+ d
             rnew = T.(residual(xnew))
             fnew = T(0.5) * dot(rnew, rnew)
-            actual_reduction = f - fnew
-
-            ratio = predicted_reduction > 0 ?
-                actual_reduction / predicted_reduction :
-                (actual_reduction > 0 ? T(Inf) : T(-Inf))
-
+            accepted = true
             if show_trace
-                println(
-                    "  μ = $mu | fonte = $direction_source | red. prevista = ",
-                    predicted_reduction, " | red. real = ", actual_reduction,
-                    " | ρ = ", ratio,
-                )
+                println("  busca linear (gradiente, ordem 2): α = $α | f(x+αd) = $fnew")
             end
-
-            if ratio >= ratio_eta1 && all(isfinite, d)
-                accepted = true
-                break
+        else
+            # Modelos reiniciados na iteração anterior não disputam a
+            # seleção de direção nesta iteração (ver `benched_models` acima).
+            # Se isso baniria todos os modelos de uma vez, ignora o
+            # banimento em vez de ficar sem candidato nenhum.
+            active_models = setdiff(models, benched_models)
+            isempty(active_models) && (active_models = models)
+            if show_trace && length(active_models) < length(models)
+                println("  Modelos de molho (reiniciados na iteração anterior): ", benched_models)
             end
-
-            rejected_directions += 1
-            # Se a razão ficou abaixo de `ratio_eta1`, o modelo quártico do
-            # vencedor desta tentativa (`direction_source`) previu mal a
-            # redução real — reinicia essa Hessiana do zero (volta a
-            # Gauss-Newton puro pra esse modelo), em vez de manter a
-            # curvatura que gerou a previsão ruim. Só o modelo culpado é
-            # reiniciado; os demais mantêm sua própria `H`. Idempotente: se
-            # já estiver zerada (ex.: tentativa anterior já reiniciou),
-            # repetir não tem efeito.
-            if best_model_result !== nothing
-                for Hi in H[direction_source]
-                    fill!(Hi, zero(T))
+            while true
+                best_directional_derivative = T(Inf)
+                best_direction = nothing
+                for model in active_models
+                    model_result = _ffjm2_model_direction(
+                        r,
+                        J,
+                        H[model],
+                        mu,
+                        last_direction_norm,
+                        model_maxiter,
+                        model_g_tol,
+                        model_multistart,
+                        model_start_spread,
+                        model_seed + k,
+                        model_solver,
+                    )
+                    model_solves += 1
+                    model_iterations += model_result.total_iterations
+                    model_solve_time_seconds += model_result.solve_time_seconds
+                    last_model_directions[model] = model_result.direction
+                    if show_trace
+                        println(
+                            "  Subproblema ($model): μ = $mu | ", model_result.stop_reason,
+                            " | Mₖ(x̄) = ", model_result.minimum,
+                        )
+                    end
+                    dtg = dot(g, model_result.direction)
+                    if all(isfinite, model_result.direction) && dtg < best_directional_derivative
+                        best_directional_derivative = dtg
+                        best_direction = model_result.direction
+                        best_model_result = model_result
+                        direction_source = model
+                    end
                 end
-                model_resets += 1
-                push!(reset_this_iteration, direction_source)
-            end
-            mu_increases += 1
-            mu = min(mu * T(mu_grow), T(mu_max))
-            if mu >= mu_max || mu_increases >= max_mu_increases
-                break
+                d = best_direction === nothing ? -g : best_direction
+                predicted_reduction = f -
+                    (best_model_result === nothing ? f : best_model_result.minimum_unpenalized)
+
+                xnew = x .+ d
+                rnew = T.(residual(xnew))
+                fnew = T(0.5) * dot(rnew, rnew)
+                actual_reduction = f - fnew
+
+                ratio = predicted_reduction > 0 ?
+                    actual_reduction / predicted_reduction :
+                    (actual_reduction > 0 ? T(Inf) : T(-Inf))
+
+                if show_trace
+                    println(
+                        "  μ = $mu | fonte = $direction_source | red. prevista = ",
+                        predicted_reduction, " | red. real = ", actual_reduction,
+                        " | ρ = ", ratio,
+                    )
+                end
+
+                if ratio >= ratio_eta1 && all(isfinite, d)
+                    accepted = true
+                    break
+                end
+
+                rejected_directions += 1
+                # Se a razão ficou abaixo de `ratio_eta1`, o modelo quártico do
+                # vencedor desta tentativa (`direction_source`) previu mal a
+                # redução real — reinicia essa Hessiana do zero (volta a
+                # Gauss-Newton puro pra esse modelo), em vez de manter a
+                # curvatura que gerou a previsão ruim. Só o modelo culpado é
+                # reiniciado; os demais mantêm sua própria `H`. Idempotente: se
+                # já estiver zerada (ex.: tentativa anterior já reiniciou),
+                # repetir não tem efeito.
+                if best_model_result !== nothing
+                    for Hi in H[direction_source]
+                        fill!(Hi, zero(T))
+                    end
+                    model_resets += 1
+                    push!(reset_this_iteration, direction_source)
+                end
+                mu_increases += 1
+                # `0 * mu_grow` ficaria preso em `0` para sempre — a primeira
+                # rejeição a partir de `μ=0` salta direto para `1`; daí em diante
+                # segue a escada normal (`μ *= mu_grow`).
+                mu = iszero(mu) ? one(T) : min(mu * T(mu_grow), T(mu_max))
+                if mu >= mu_max || mu_increases >= max_mu_increases
+                    break
+                end
             end
         end
         # Modelos reiniciados nesta iteração ficam de fora da disputa só na
@@ -527,75 +591,36 @@ function ffjm2(
         # competir normalmente.
         benched_models = reset_this_iteration
 
-        # 2.3.3. Direção -∇f(xₖ) com backtracking de Armijo
-        # (`fallback_linesearch`). Roda em dois casos, ambos caracterizados
-        # por `!accepted` neste ponto: (i) k=0, onde 2.3.2 nem chega a
-        # executar porque nenhum `H[model]` foi construído ainda; (ii) k>0,
-        # como salvaguarda, quando nem o Gauss-Newton nem os aumentos/resets
-        # de μ de 2.3.2 produziram um passo aceito. Só se essa busca linear
-        # também falhar (ou `-∇f(xₖ)` não for direção de descida) a iteração
-        # externa para com `status = :regularization_stalled`.
-        gradient_fallback = false
-        if !accepted
-            p = -g
-            directional_derivative = dot(g, p)
-            if directional_derivative < 0
-                trial_residual = Ref(r)
-                ϕ(α) = begin
-                    xtrial = x .+ α .* p
-                    rtrial = T.(residual(xtrial))
-                    trial_residual[] = rtrial
-                    T(0.5) * dot(rtrial, rtrial)
-                end
-                try
-                    α, ftrial = fallback_linesearch(ϕ, one(T), f, directional_derivative)
-                    d = α .* p
-                    xnew = x .+ d
-                    rnew = trial_residual[]
-                    fnew = T(ftrial)
-                    direction_source = :gradient_backtracking
-                    accepted = true
-                    gradient_fallback = true
-                catch err
-                    err isa LineSearches.LineSearchException || rethrow()
-                end
-            end
-            if show_trace
-                println(
-                    "  -∇f + backtracking (", k == 0 ? "iteração 0" : "salvaguarda", "): ",
-                    accepted ? "aceita (‖d‖ = $(norm(d)))" : "falhou",
-                )
-            end
-        end
-
         last_ratio = ratio
         last_mu_increases = mu_increases
         last_direction_norm = norm(d)
         last_direction_source = direction_source
         last_mu = mu
         push!(mu_history, mu)
-        # k=0 sempre usa -∇f+Armijo por construção (não há H ainda); só conta
-        # como "fallback" quando acontece em k>0, isto é, quando 2.3.2 de
-        # fato tentou e falhou o subproblema quártico.
-        gradient_fallback && k > 0 && (gradient_fallback_used += 1)
 
+        # Se a busca em μ de 2.3.2 se esgotou sem um passo aceito (μ passou
+        # de `mu_max` ou as tentativas passaram de `max_mu_increases`), a
+        # iteração externa para aqui — sem salvaguarda por busca linear, ver
+        # docstring.
         if !accepted
             status = :regularization_stalled
             iterations = k
             break
         end
 
-        # 2.3.4. Passo aceito: μ decresce para a próxima iteração externa
+        # 2.3.3. Passo aceito: μ decresce para a próxima iteração externa
         # (encolhe pelo mesmo fator `mu_grow` usado para crescer, com piso
-        # `mu_min`), em vez de reiniciar em 0. Reflete a versão que funcionou
-        # melhor nos testes: μ começa em `mu_initial` (padrão 1) e vai
-        # decrescendo ao longo das iterações, só voltando a crescer quando um
-        # passo é de fato rejeitado. O passo de salvaguarda por gradiente não
-        # informa o amortecimento do LM (não veio do modelo quártico), então
-        # μ fica como estava para a próxima tentativa.
-        gradient_fallback || (mu = max(mu / T(mu_grow), T(mu_min)))
+        # `mu_min`). μ começa em `mu_initial` (padrão 0 — primeira tentativa
+        # sempre em Gauss-Newton puro) e só cresce (0 → 1 → mu_grow → ...,
+        # ver 2.3.2) quando um passo é de fato rejeitado; enquanto continuar
+        # em 0 (nenhuma rejeição ainda ocorreu), aceitar não move μ — só
+        # depois que ele cresceu é que volta a encolher a cada aceitação, com
+        # piso `mu_min` (nunca retorna a 0 sozinho). A iteração 0 não passou
+        # pelo subproblema em μ (busca linear pelo gradiente, ver acima) —
+        # μ permanece em `mu_initial` para a iteração 1.
+        k == 0 || iszero(mu) || (mu = max(mu / T(mu_grow), T(mu_min)))
 
-        # 2.3.5. Atualização das Hessianas individuais e do estado externo.
+        # 2.3.4. Atualização das Hessianas individuais e do estado externo.
         Jnew = T.(jac(xnew))
         s = xnew - x
         if initial_scaling && k == 0
@@ -658,7 +683,6 @@ function ffjm2(
         total_function_evaluation_time_seconds,
         total_gradient_evaluation_time_seconds,
         rejected_directions,
-        gradient_fallback_used,
         model_resets,
         mu_history,
         model_solver,
@@ -1882,6 +1906,318 @@ function bfgs_puro_penalizado(
         gradient_evaluation_time_seconds = mean_gradient_evaluation_time_seconds,
         total_function_evaluation_time_seconds,
         total_gradient_evaluation_time_seconds,
+    )
+end
+
+# ==============================================================================
+# 6.2.1. BOBYQA/MADS/SID-PSM equivalentes a bfgs_puro_penalizado, sobre dados
+# reais (sv_fork_assimilation) — mesma família de bobyqa_puro_penalizado_pregerado/
+# mads_puro_penalizado_pregerado/sidpsm_puro_penalizado_pregerado em
+# `sv_teste_pregenered.jl`, só que sem experimento gêmeo (sem `x_otimo`).
+# ==============================================================================
+
+"""
+    bobyqa_puro_penalizado(x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `NLopt.:LN_BOBYQA` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation(x, tbeg, tend, nothing).erro` — mesma
+penalização de [`bfgs_puro_penalizado`](@ref), sobre dados reais (não o
+experimento gêmeo de `bobyqa_puro_penalizado_pregerado`,
+`sv_teste_pregenered.jl`). Mesma configuração/formato de retorno dessa
+função irmã (ver sua docstring para detalhes).
+"""
+function bobyqa_puro_penalizado(
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    rhobeg::Real = 0.005,
+    rhoend::Real = 1e-6,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+
+    raw_residual(x) = sv_fork_assimilation(x, tbeg, tend, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    optimizer = NLopt.Opt(:LN_BOBYQA, dim)
+    optimizer.lower_bounds = lb
+    optimizer.upper_bounds = ub
+    optimizer.initial_step = fill(Float64(rhobeg), dim)
+    optimizer.xtol_abs = fill(Float64(rhoend), dim)
+    optimizer.maxeval = Int(f_calls_limit)
+    optimizer.min_objective = (x, grad) -> objective(x)
+
+    minimum_value, minimizer, status = NLopt.optimize(optimizer, x)
+    minimizer = collect(minimizer)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    converged = status in (:SUCCESS, :STOPVAL_REACHED, :FTOL_REACHED, :XTOL_REACHED)
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = nothing,
+        converged,
+        status = Symbol(status),
+        execution_time_seconds,
+        rejected_directions = 0,
+        alphas = nothing,
+        solution = (; minimum_value, minimizer, status),
+        u = minimizer,
+        objective = minimum_value,
+        stats = (; minimum_value, minimizer, status),
+        retcode = Symbol(status),
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
+    )
+end
+
+"""
+    mads_puro_penalizado(x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `NOMAD.solve` (MADS) sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation(x, tbeg, tend, nothing).erro` — mesma
+penalização de [`bfgs_puro_penalizado`](@ref), sobre dados reais (não o
+experimento gêmeo de `mads_puro_penalizado_pregerado`,
+`sv_teste_pregenered.jl`). Mesma configuração/formato de retorno dessa
+função irmã (ver sua docstring para detalhes, incluindo o fallback para o
+melhor ponto avaliado quando `NOMAD.solve` devolve `x_sol === nothing`).
+"""
+function mads_puro_penalizado(
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    rhobeg::Real = 0.005,
+    rhoend::Real = 1e-6,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+    best_value_mads = Ref(Inf)
+    best_point_mads = copy(x)
+
+    raw_residual(x) = sv_fork_assimilation(x, tbeg, tend, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    objective_mads = function (x)
+        value = Float64(objective(x))
+        if value < best_value_mads[]
+            best_value_mads[] = value
+            best_point_mads .= x
+        end
+        return true, true, [value]
+    end
+
+    options_mads = NOMAD.NomadOptions(display_degree = 0, max_bb_eval = Int(f_calls_limit))
+    problem_mads = NOMAD.NomadProblem(
+        dim, 1, ["OBJ"], objective_mads,
+        input_types = fill("R", dim),
+        lower_bound = lb, upper_bound = ub,
+        min_mesh_size = fill(Float64(rhoend), dim),
+        initial_mesh_size = fill(Float64(rhobeg), dim),
+        options = options_mads,
+    )
+
+    result_mads = NOMAD.solve(problem_mads, x)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    minimizer = result_mads.x_sol === nothing ? copy(best_point_mads) : collect(result_mads.x_sol)
+    minimum_value = Float64(objective(minimizer))
+    status = result_mads.status
+    factivel = result_mads.feasible
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = nothing,
+        converged = factivel,
+        status = Symbol(status),
+        execution_time_seconds,
+        rejected_directions = 0,
+        alphas = nothing,
+        solution = result_mads,
+        u = minimizer,
+        objective = minimum_value,
+        stats = result_mads,
+        retcode = Symbol(status),
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
+    )
+end
+
+"""
+    sidpsm_puro_penalizado(x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `SidPsm.minimize!` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation(x, tbeg, tend, nothing).erro` — mesma
+penalização de [`bfgs_puro_penalizado`](@ref), sobre dados reais (não o
+experimento gêmeo de `sidpsm_puro_penalizado_pregerado`,
+`sv_teste_pregenered.jl`). Mesma configuração/formato de retorno dessa
+função irmã (ver sua docstring para detalhes, incluindo o desfazimento da
+escala interna `[0, 10]` do SID-PSM).
+"""
+function sidpsm_puro_penalizado(
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    all(lb .<= x .<= ub) || throw(ArgumentError("x0 deve estar dentro da caixa [lower, upper]"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+
+    raw_residual(x) = sv_fork_assimilation(x, tbeg, tend, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    problem = SidPsm.Problem(x, 0, 0, lb, ub; func_f = objective)
+    alg = SidPsm.SidPsmAlgorithm(problem)
+    alg.params.stop_fevals = true
+    alg.params.fevals_max = Int(f_calls_limit)
+
+    SidPsm.minimize!(alg, problem)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    minimizer = if isempty(alg.x_current)
+        copy(x)
+    else
+        m = copy(alg.x_current)
+        if alg.scale_x
+            mask = alg.scaling_mask
+            m[mask] = (m[mask] ./ 10) .* (ub[mask] .- lb[mask]) .+ lb[mask]
+        end
+        m
+    end
+    minimum_value = alg.f_obj_current
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    converged = alg.alfa < alg.params.tol_alfa
+    status = converged ? :alfa_tolerance_reached : :fevals_limit_reached
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = alg.iter,
+        converged,
+        status,
+        execution_time_seconds,
+        rejected_directions = alg.iter_uns,
+        alphas = nothing,
+        solution = alg,
+        u = minimizer,
+        objective = minimum_value,
+        stats = alg,
+        retcode = status,
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
     )
 end
 

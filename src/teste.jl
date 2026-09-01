@@ -385,6 +385,76 @@ testar_bfgs_backtracking_mgh(nome::Symbol; kwargs...) =
     testar_bfgs_backtracking_mgh(_mgh_problem(nome); kwargs...)
 
 """
+    testar_bfgs_linesearch_mgh(nls_ou_nome; linesearch, show_trace=false, optim_options=(;))
+
+Igual a [`testar_bfgs_backtracking_mgh`](@ref) (mesmo objetivo
+`0.5*||F(x)||²`, mesmo gradiente analítico `Jᵀr`), mas generaliza para
+qualquer `linesearch` aceito por `Optim.BFGS(; linesearch)` — não só
+`LineSearches.BackTracking` por `order`. Serve para comparar buscas que não
+se encaixam em "ordem" (ex. `LineSearches.HagerZhang()`, o padrão do
+`Optim.jl`, ou `SimpleBackTracking` — backtracking geométrico minimalista
+sem interpolação, "ordem 1", definido em `ffjm2.jl`).
+"""
+function testar_bfgs_linesearch_mgh(
+    nls::NLPModels.AbstractNLSModel;
+    linesearch,
+    show_trace::Bool = false,
+    optim_options = (;),
+)
+    x0 = collect(nls.meta.x0)
+    objetivo(x) = 0.5 * sum(abs2, residual(nls, x))
+    function gradiente!(g, x)
+        mul!(g, jac_residual(nls, x)', residual(nls, x))
+        return g
+    end
+
+    options = Optim.Options(; merge((; show_trace, store_trace = true), optim_options)...)
+    method = Optim.BFGS(; linesearch)
+
+    start_ns = time_ns()
+    result = Optim.optimize(objetivo, gradiente!, x0, method, options)
+    execution_time_seconds = (time_ns() - start_ns) / 1e9
+
+    minimizer = Optim.minimizer(result)
+    gradient = gradiente!(similar(minimizer), minimizer)
+    converged = Optim.converged(result)
+    status = if Optim.g_converged(result)
+        "gradient_converged"
+    elseif Optim.x_converged(result)
+        "step_converged"
+    elseif Optim.f_converged(result)
+        "function_converged"
+    elseif Optim.iteration_limit_reached(result)
+        "maximum_iterations"
+    else
+        "not_converged"
+    end
+
+    @printf(
+        "%-7s n=%-3d m=%-3d f=%.6e ||grad||=%.3e iter=%-4d status=%-22s convergiu=%s\n",
+        nls.meta.name, nls.meta.nvar, nls.nls_meta.nequ,
+        Optim.minimum(result), norm(gradient), Optim.iterations(result),
+        status, converged,
+    )
+
+    return (;
+        minimizer,
+        minimum = Optim.minimum(result),
+        gradient,
+        iterations = Optim.iterations(result),
+        function_evaluations = Optim.f_calls(result),
+        gradient_evaluations = Optim.g_calls(result),
+        execution_time_seconds,
+        converged,
+        status,
+        result,
+    )
+end
+
+testar_bfgs_linesearch_mgh(nome::Symbol; kwargs...) =
+    testar_bfgs_linesearch_mgh(_mgh_problem(nome); kwargs...)
+
+"""
     testar_ffjm2_mgh_todos(; nomes=MGH_PROBLEM_NAMES, update=:bfgs,
                               output="results/ffjm2_mgh.csv", kwargs...)
 
@@ -494,6 +564,157 @@ function comparar_ffjm2_bfgs_mgh(;
     return (; rows, output)
 end
 
+"""
+    comparar_ffjm2_subproblem_solvers_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                             output="results/comparacao_ffjm2_model_solvers_mgh.csv",
+                                             update=:psb, model_solvers=(:ipopt, :bfgs, :bobyqa),
+                                             ffjm2_options=(;), show_trace=false)
+
+Roda `ffjm2` **completo** (o laço externo inteiro, não o solver isolado
+sobre `0.5*||F(x)||²`) nos 34 problemas MGH, uma vez para cada
+`model_solver` em `model_solvers`, para medir como a escolha do solver do
+subproblema interno afeta o custo \emph{externo} real do método.
+
+`function_evaluations`/`gradient_evaluations` aqui só contam chamadas a
+`residual(x)`/`jac(x)` — a `F` real, cara — feitas pelo laço principal de
+`ffjm2`; `_ffjm2_model_direction` (onde `model_solver` resolve o quártico
+barato) nunca toca nesses contadores, então essa contagem já é
+"externa apenas" independente de qual `model_solver` for usado — não
+precisa de nenhuma mudança em `ffjm2.jl` para isso. O esforço do solver
+interno (iterações/tempo gastos no quártico) fica à parte, nos campos
+`model_solves`/`model_iterations`/`model_solve_time_seconds` do retorno de
+`ffjm2` (não usados aqui).
+
+Ao contrário de [`comparar_solvers_subproblema_ffjm2_mgh`](@ref) (que roda
+cada solver sozinho, como se fosse o otimizador inteiro, sem nunca passar
+pelo `ffjm2`), esta função sempre roda o `ffjm2` de verdade — `model_solver`
+só troca quem resolve o subproblema quártico a cada iteração externa.
+
+Salva uma linha por (problema, `model_solver`) em `output` (mesmo formato
+de `comparar_ffjm2_bfgs_mgh`, `method` = `"ffjm2_<update>_<model_solver>"`).
+Uma combinação que lançar exceção é reportada e pulada sem interromper o
+laço.
+
+`:mads` fica de fora do padrão de `model_solvers`: um teste rápido mostrou
+que, mesmo com `model_multistart` bem menor que o padrão (`10` em vez de
+`1000`), um único problema fácil (`mgh01`, 2 variáveis) já levou ~69s só
+no MADS, contra <0.1s para BFGS/BOBYQA — o overhead do `NOMAD.jl` por
+chamada de subproblema é grande o bastante para tornar `model_multistart`
+padrão inviável nos 34 problemas. Ainda pode ser passado explicitamente
+(`model_solvers=(:ipopt, :bfgs, :bobyqa, :mads)`) com um
+`ffjm2_options=(model_multistart=10,)` ou menor.
+"""
+function comparar_ffjm2_subproblem_solvers_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_ffjm2_model_solvers_mgh.csv",
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
+    model_solvers = (:ipopt, :bfgs, :bobyqa),
+    ffjm2_options = (;),
+    show_trace::Bool = false,
+)
+    solvers = Symbol.(collect(model_solvers))
+    !isempty(solvers) && all(s -> s in (:ipopt, :bfgs, :bobyqa, :mads), solvers) ||
+        throw(ArgumentError("model_solvers contém um solver inválido"))
+
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    sufixo_update = update isa Symbol ? String(update) : join(String.(update), "+")
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            for model_solver in solvers
+                metodo = "ffjm2_$(sufixo_update)_$(model_solver)"
+                try
+                    resultado = testar_ffjm2_mgh(nls; update, model_solver, show_trace, ffjm2_options...)
+                    row = _mgh_csv_row(String(nome), n, m, x0, metodo, resultado)
+                    push!(rows, row)
+                    _write_mgh_csv_row(io, row)
+                catch e
+                    println("$(nome) ($(metodo)): ERRO - $(sprint(showerror, e))")
+                end
+                flush(io)
+            end
+        end
+    end
+
+    println("Comparação ffjm2 por model_solver (MGH) salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_bfgs_linesearches_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                      output="results/comparacao_bfgs_linesearches_mgh.csv",
+                                      alpha_min=1e-12, show_trace=false, optim_options=(;))
+
+Compara `Optim.BFGS` com quatro buscas lineares nos 34 problemas MGH de
+`NLSProblems.jl` (mesmo objetivo `0.5*||F(x)||²`, mesmo gradiente analítico
+de [`testar_bfgs_linesearch_mgh`](@ref)):
+
+  * `LineSearches.HagerZhang()` — padrão do `Optim.jl`;
+  * `SimpleBackTracking(; min_alpha=alpha_min)` — backtracking geométrico
+    minimalista sem interpolação ("ordem 1"), definido em `ffjm2.jl`:
+    sempre recomeça do `alpha=1.0` fixo a cada iteração (ignora o
+    `initial_alpha` sugerido pelo `Optim.BFGS`), multiplicando por
+    `rho=0.5` até a condição de Armijo (mesmo protocolo de
+    `LineSearches.AbstractLineSearch`, já usado como
+    `"backtracking_simples"` em `comparar_buscas_lineares_ffjm2`);
+  * `LineSearches.BackTracking(order=2)` — interpolação quadrática;
+  * `LineSearches.BackTracking(order=3)` — interpolação cúbica.
+
+Salva 4 linhas por problema em `output` (CSV, mesmo formato/colunas de
+`comparar_ffjm2_bfgs_mgh`, coluna `method` com valores
+`bfgs_hagerzhang`/`bfgs_backtracking1`/`bfgs_backtracking2`/`bfgs_backtracking3`).
+Uma busca que lançar exceção num problema é reportada e pulada sem impedir
+as demais buscas nem interromper o laço.
+"""
+function comparar_bfgs_linesearches_mgh(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = "results/comparacao_bfgs_linesearches_mgh.csv",
+    alpha_min::Real = 1e-12,
+    show_trace::Bool = false,
+    optim_options = (;),
+)
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+
+    buscas = (
+        ("bfgs_hagerzhang", LineSearches.HagerZhang()),
+        ("bfgs_backtracking1", SimpleBackTracking(; min_alpha = alpha_min)),
+        ("bfgs_backtracking2", LineSearches.BackTracking(order = 2)),
+        ("bfgs_backtracking3", LineSearches.BackTracking(order = 3)),
+    )
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            for (metodo, linesearch) in buscas
+                try
+                    resultado = testar_bfgs_linesearch_mgh(nls; linesearch, show_trace, optim_options...)
+                    row = _mgh_csv_row(String(nome), n, m, x0, metodo, resultado)
+                    push!(rows, row)
+                    _write_mgh_csv_row(io, row)
+                catch e
+                    println("$(nome) ($(metodo)): ERRO - $(sprint(showerror, e))")
+                end
+            end
+
+            flush(io)
+        end
+    end
+
+    println("Comparação de linesearches do BFGS (MGH) salva em: $output")
+    return (; rows, output)
+end
+
 # Média e desvio padrão de um vetor de métricas; devolve (NaN, NaN) se vazio
 # e (valor, NaN) se houver só uma amostra (std de 1 ponto não é definido).
 function _mean_std(xs::AbstractVector{<:Real})
@@ -586,4 +807,253 @@ function comparar_ffjm2_modelos_mgh(;
     println("Resumo por modelo (média/desvio padrão) salvo em: $resumo_output")
 
     return (; rows, output, resumo_output)
+end
+
+# ==============================================================================
+# Comparação de Ipopt, BFGS, BOBYQA e MADS resolvendo diretamente o problema
+# de soma de quadrados 0.5*||F(x)||² dos problemas MGH — sem passar pelo
+# `ffjm2` nem pelo seu subproblema interno.
+#
+# A versão anterior (`comparar_solvers_subproblema_ffjm2_mgh`) media cada
+# solver só como resolvedor do *subproblema* interno do `ffjm2` (o modelo
+# quártico local a cada iteração k). Isso não é uma comparação útil de poder
+# de otimização: o laço externo do `ffjm2` rejeita e refaz passos ruins
+# (μ cresce, Hessiana reseta — ver `[[ffjm2_mu_scheme]]`/`[[ffjm2_model_reset]]`),
+# então um subproblema mal resolvido tende a ser compensado pelo laço
+# externo, mascarando diferenças reais entre os solvers. Esta versão resolve
+# o problema MGH inteiro com cada solver, do mesmo jeito que
+# `comparar_ffjm2_bfgs_mgh` compara `ffjm2` com BFGS.
+# ==============================================================================
+
+struct _MGHSumSquaresEvaluator{NLS} <: MOI.AbstractNLPEvaluator
+    nls::NLS
+    function_evaluations::Base.RefValue{Int}
+    gradient_evaluations::Base.RefValue{Int}
+end
+
+MOI.features_available(::_MGHSumSquaresEvaluator) = [:Grad]
+MOI.initialize(::_MGHSumSquaresEvaluator, requested_features) = nothing
+
+function MOI.eval_objective(evaluator::_MGHSumSquaresEvaluator, x)
+    evaluator.function_evaluations[] += 1
+    r = residual(evaluator.nls, x)
+    return 0.5 * dot(r, r)
+end
+
+function MOI.eval_objective_gradient(evaluator::_MGHSumSquaresEvaluator, gradient, x)
+    evaluator.gradient_evaluations[] += 1
+    r = residual(evaluator.nls, x)
+    J = jac_residual(evaluator.nls, x)
+    mul!(gradient, J', r)
+    return gradient
+end
+
+"""
+    _resolver_soma_quadrados_mgh(nls, solver; maxiter=1000, g_tol=1e-8, f_calls_limit=2000, show_trace=false)
+
+Resolve `0.5*||F(x)||²` para o problema MGH `nls` a partir de `nls.meta.x0`,
+diretamente com `solver` (`:ipopt`, `:bfgs`, `:bobyqa` ou `:mads`) — sem
+passar pelo `ffjm2`. `:bfgs` delega a `testar_bfgs_backtracking_mgh`
+(mesmo BFGS com `LineSearches.BackTracking` usado em `comparar_ffjm2_bfgs_mgh`).
+`:bobyqa` e `:mads` são livres de derivada e usam uma caixa
+`x0 .± bound_radius` (`bound_radius = max(1e3, 100*max(1, ‖x0‖))`), já que
+ambos exigem limites finitos; o gradiente reportado para eles é calculado
+à parte (via `Jᵀr` no minimizador final), fora da contagem de avaliações,
+só para permitir comparação com Ipopt/BFGS. Devolve um `NamedTuple` com os
+mesmos campos usados por `_mgh_csv_row`.
+"""
+function _resolver_soma_quadrados_mgh(
+    nls::NLPModels.AbstractNLSModel,
+    solver::Symbol;
+    maxiter::Integer = 1000,
+    g_tol::Real = 1e-8,
+    f_calls_limit::Integer = 2000,
+    show_trace::Bool = false,
+)
+    x0 = collect(Float64.(nls.meta.x0))
+    n = length(x0)
+    F(x) = residual(nls, x)
+    gradiente(x) = jac_residual(nls, x)' * F(x)
+
+    if solver === :bfgs
+        resultado = testar_bfgs_backtracking_mgh(nls; show_trace)
+        return (;
+            minimizer = resultado.minimizer,
+            minimum = resultado.minimum,
+            gradient = resultado.gradient,
+            iterations = resultado.iterations,
+            function_evaluations = resultado.function_evaluations,
+            gradient_evaluations = resultado.gradient_evaluations,
+            execution_time_seconds = resultado.execution_time_seconds,
+            converged = resultado.converged,
+            status = resultado.status,
+        )
+    elseif solver === :ipopt
+        function_evaluations = Ref(0)
+        gradient_evaluations = Ref(0)
+        evaluator = _MGHSumSquaresEvaluator(nls, function_evaluations, gradient_evaluations)
+        optimizer = Ipopt.Optimizer()
+        MOI.set(optimizer, MOI.Silent(), !show_trace)
+        MOI.set(optimizer, MOI.RawOptimizerAttribute("max_iter"), Int(maxiter))
+        MOI.set(optimizer, MOI.RawOptimizerAttribute("tol"), Float64(g_tol))
+        MOI.set(optimizer, MOI.RawOptimizerAttribute("hessian_approximation"), "limited-memory")
+        variables = MOI.add_variables(optimizer, n)
+        MOI.set.(optimizer, MOI.VariablePrimalStart(), variables, x0)
+        MOI.set(
+            optimizer, MOI.NLPBlock(),
+            MOI.NLPBlockData(MOI.NLPBoundsPair[], evaluator, true),
+        )
+        MOI.set(optimizer, MOI.ObjectiveSense(), MOI.MIN_SENSE)
+        start_ns = time_ns()
+        MOI.optimize!(optimizer)
+        execution_time_seconds = (time_ns() - start_ns) / 1e9
+        minimizer = MOI.get.(optimizer, MOI.VariablePrimal(), variables)
+        status = MOI.get(optimizer, MOI.TerminationStatus())
+        return (;
+            minimizer,
+            minimum = MOI.get(optimizer, MOI.ObjectiveValue()),
+            gradient = gradiente(minimizer),
+            iterations = MOI.get(optimizer, MOI.BarrierIterations()),
+            function_evaluations = function_evaluations[],
+            gradient_evaluations = gradient_evaluations[],
+            execution_time_seconds,
+            converged = status == MOI.LOCALLY_SOLVED,
+            status = string(status),
+        )
+    else
+        bound_radius = max(1.0e3, 100 * max(1.0, norm(x0)))
+        lower = x0 .- bound_radius
+        upper = x0 .+ bound_radius
+        objective(x) = 0.5 * sum(abs2, F(x))
+
+        if solver === :bobyqa
+            function_evaluations = Ref(0)
+            optimizer = NLopt.Opt(:LN_BOBYQA, n)
+            optimizer.lower_bounds = lower
+            optimizer.upper_bounds = upper
+            optimizer.xtol_abs = fill(max(Float64(g_tol), eps(Float64)), n)
+            optimizer.maxeval = Int(f_calls_limit)
+            optimizer.min_objective = (x, grad) -> begin
+                function_evaluations[] += 1
+                return objective(x)
+            end
+            start_ns = time_ns()
+            minimum_valor, minimizer, status = NLopt.optimize(optimizer, x0)
+            execution_time_seconds = (time_ns() - start_ns) / 1e9
+            minimizer = collect(minimizer)
+            gradient = gradiente(minimizer)
+            return (;
+                minimizer,
+                minimum = minimum_valor,
+                gradient,
+                iterations = function_evaluations[],
+                function_evaluations = function_evaluations[],
+                gradient_evaluations = 0,
+                execution_time_seconds,
+                converged = norm(gradient) <= g_tol,
+                status = string(status),
+            )
+        else
+            solver === :mads ||
+                throw(ArgumentError("solver deve ser :ipopt, :bfgs, :bobyqa ou :mads"))
+            function_evaluations = Ref(0)
+            best_value = Ref(Inf)
+            best_point = copy(x0)
+            objective_mads = function (x)
+                value = Float64(objective(x))
+                function_evaluations[] += 1
+                if value < best_value[]
+                    best_value[] = value
+                    best_point .= x
+                end
+                return true, true, [value]
+            end
+            options = NOMAD.NomadOptions(display_degree = 0, max_bb_eval = Int(f_calls_limit))
+            problem = NOMAD.NomadProblem(
+                n, 1, ["OBJ"], objective_mads,
+                input_types = fill("R", n),
+                lower_bound = lower, upper_bound = upper,
+                options = options,
+            )
+            start_ns = time_ns()
+            resultado = NOMAD.solve(problem, x0)
+            execution_time_seconds = (time_ns() - start_ns) / 1e9
+            minimizer = resultado.x_sol === nothing ? copy(best_point) : collect(resultado.x_sol)
+            minimum_valor = objective(minimizer)
+            gradient = gradiente(minimizer)
+            return (;
+                minimizer,
+                minimum = minimum_valor,
+                gradient,
+                iterations = function_evaluations[],
+                function_evaluations = function_evaluations[],
+                gradient_evaluations = 0,
+                execution_time_seconds,
+                converged = norm(gradient) <= g_tol,
+                status = string(resultado.status),
+            )
+        end
+    end
+end
+
+"""
+    comparar_solvers_subproblema_ffjm2_mgh(; nomes=MGH_PROBLEM_NAMES,
+                                              output="results/comparacao_solvers_ffjm2_mgh.csv",
+                                              model_solvers=(:ipopt, :bfgs, :bobyqa, :mads),
+                                              maxiter=1000, g_tol=1e-8, f_calls_limit=2000,
+                                              show_trace=false)
+
+Roda, para cada problema MGH em `nomes`, cada solver em `model_solvers`
+(Ipopt, BFGS, BOBYQA, MADS) resolvendo diretamente `0.5*||F(x)||²` — mesma
+ideia de `comparar_ffjm2_bfgs_mgh`, mas comparando esses quatro solvers
+entre si em vez de `ffjm2` contra BFGS. Ver `_resolver_soma_quadrados_mgh`
+para os detalhes de cada solver. Salva uma linha por (problema, solver) em
+`output` (mesmo formato de `comparar_ffjm2_bfgs_mgh`, `method` = nome do
+solver). Uma combinação que lançar exceção é reportada e pulada sem
+interromper o laço.
+"""
+function comparar_solvers(;
+    nomes::AbstractVector{Symbol} = MGH_PROBLEM_NAMES,
+    output::AbstractString = normpath(joinpath(
+        @__DIR__, "..", "results", "comparacao_solvers_ffjm2_mgh.csv",
+    )),
+    model_solvers = (:ipopt, :bfgs, :bobyqa, :mads),
+    maxiter::Integer = 1000,
+    g_tol::Real = 1e-8,
+    f_calls_limit::Integer = 2000,
+    show_trace::Bool = false,
+)
+    solvers = Symbol.(collect(model_solvers))
+    !isempty(solvers) && all(s -> s in (:ipopt, :bfgs, :bobyqa, :mads), solvers) ||
+        throw(ArgumentError("model_solvers contém um solver inválido"))
+
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+
+    open(output, "w") do io
+        write(io, _MGH_CSV_HEADER)
+
+        for nome in nomes
+            nls = _mgh_problem(nome)
+            n, m, x0 = nls.meta.nvar, nls.nls_meta.nequ, nls.meta.x0
+
+            for solver in solvers
+                metodo = string(solver)
+                try
+                    resultado = _resolver_soma_quadrados_mgh(
+                        nls, solver; maxiter, g_tol, f_calls_limit, show_trace,
+                    )
+                    row = _mgh_csv_row(String(nome), n, m, x0, metodo, resultado)
+                    push!(rows, row)
+                    _write_mgh_csv_row(io, row)
+                catch e
+                    println("$(nome) ($(metodo)): ERRO - $(sprint(showerror, e))")
+                end
+                flush(io)
+            end
+        end
+    end
+
+    println("Comparação dos solvers (MGH, soma de quadrados) salva em: $output")
+    return (; rows, output)
 end

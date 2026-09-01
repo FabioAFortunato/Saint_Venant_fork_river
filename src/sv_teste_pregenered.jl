@@ -17,6 +17,8 @@
 # ==============================================================================
 
 using LineSearches
+using NLopt
+using NOMAD
 using Optim
 
 # `sr1_bfgs_backtracking.jl` já inclui `sv_fork.jl` e traz `sv_box_penalty`/
@@ -24,6 +26,25 @@ using Optim
 # por todo `bfgs_*` deste arquivo e de `ffjm2.jl` (ver docstring de
 # `sv_objective_from_residual`).
 include("sr1_bfgs_backtracking.jl")
+
+# `SidPsm` (busca padrão livre de derivada com direções geradas por
+# derivadas de simplex, tradução do SID-PSM original em Matlab) vive em
+# `tmp/SidPsm.jl` em vez de `src/` — incluído por caminho relativo e
+# referenciado sempre como `SidPsm.<nome>` (nunca `using .SidPsm`) porque o
+# módulo exporta nomes genéricos (`Problem`, `Parameters`) que colidiriam
+# facilmente com outros arquivos deste projeto, todos compartilhando o
+# namespace de `Main` via `include`. Guardado porque `ffjm2.jl` (incluído
+# logo abaixo) também o inclui.
+if !isdefined(@__MODULE__, :SidPsm)
+    include(joinpath(@__DIR__, "..", "tmp", "SidPsm.jl"))
+end
+
+# `ffjm2.jl` traz `ffjm2`, `bfgs_puro_penalizado` e as versões reais de
+# BOBYQA/MADS/SID-PSM (`bobyqa_puro_penalizado`, `mads_puro_penalizado`,
+# `sidpsm_puro_penalizado`) usadas por `comparar_solvers_real` abaixo.
+if !isdefined(@__MODULE__, :ffjm2)
+    include("ffjm2.jl")
+end
 
 function sv_fork_dados_pregerados(
     ng_verdadeiro::AbstractVector{T},
@@ -490,6 +511,7 @@ function bfgs_puro_penalizado_pregerado(
     linesearch = nothing,
     show_trace::Bool = false,
 )
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
     start_time_ns = time_ns()
     x = collect(float.(x0))
     dim = length(x)
@@ -509,8 +531,6 @@ function bfgs_puro_penalizado_pregerado(
     latest_residual = Ref{Any}(nothing)
     latest_gradient_x = Ref{Any}(nothing)
     latest_gradient = Ref{Any}(nothing)
-
-    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
 
     raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
     pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
@@ -618,3 +638,678 @@ function bfgs_puro_penalizado_pregerado(
         total_gradient_evaluation_time_seconds,
     )
 end
+
+# ==============================================================================
+# BOBYQA (NLopt.jl, livre de derivada) sobre a mesma penalidade de caixa do
+# experimento gêmeo, igual ao bloco "BOBYQA" de `comparar_bfgs_spg_bobyqa_mads`
+# em `ffjm2.jl`, só que sobre o resíduo pré-gerado
+# (`sv_fork_assimilation_pregerado`) em vez do resíduo real.
+# ==============================================================================
+
+"""
+    bobyqa_puro_penalizado_pregerado(x_otimo, x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `NLopt.:LN_BOBYQA` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro`
+e `dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)` — mesmo
+experimento gêmeo de [`bfgs_puro_penalizado_pregerado`](@ref): `x_otimo` é o
+`ng` "verdadeiro" usado para gerar os dados de referência.
+
+Mesma configuração do bloco BOBYQA de `comparar_bfgs_spg_bobyqa_mads`
+(`ffjm2.jl`): caixa nativa via `lower_bounds`/`upper_bounds`, `initial_step =
+rhobeg`, `xtol_abs = rhoend`, `maxeval = f_calls_limit`. BOBYQA não usa
+gradiente — `gradient` no retorno é calculado à parte (via
+`ForwardDiff.gradient!` sobre o objetivo penalizado) só para permitir
+comparação com `bfgs_puro_penalizado_pregerado`, e não conta para
+`function_evaluations`/`gradient_evaluations`. O formato de retorno segue o
+de `bfgs_puro_penalizado_pregerado` para ficar comparável.
+"""
+function bobyqa_puro_penalizado_pregerado(
+    x_otimo::AbstractVector,
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    rhobeg::Real = 0.005,
+    rhoend::Real = 1e-6,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+
+    raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    optimizer = NLopt.Opt(:LN_BOBYQA, dim)
+    optimizer.lower_bounds = lb
+    optimizer.upper_bounds = ub
+    optimizer.initial_step = fill(Float64(rhobeg), dim)
+    optimizer.xtol_abs = fill(Float64(rhoend), dim)
+    optimizer.maxeval = Int(f_calls_limit)
+    optimizer.min_objective = (x, grad) -> objective(x)
+
+    minimum_value, minimizer, status = NLopt.optimize(optimizer, x)
+    minimizer = collect(minimizer)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    converged = status in (:SUCCESS, :STOPVAL_REACHED, :FTOL_REACHED, :XTOL_REACHED)
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = nothing,
+        converged,
+        status = Symbol(status),
+        execution_time_seconds,
+        rejected_directions = 0,
+        alphas = nothing,
+        solution = (; minimum_value, minimizer, status),
+        u = minimizer,
+        objective = minimum_value,
+        stats = (; minimum_value, minimizer, status),
+        retcode = Symbol(status),
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
+    )
+end
+
+# ==============================================================================
+# MADS (NOMAD.jl, livre de derivada) sobre a mesma penalidade de caixa do
+# experimento gêmeo, igual ao bloco "MADS" de `comparar_bfgs_spg_bobyqa_mads`
+# em `ffjm2.jl`, só que sobre o resíduo pré-gerado
+# (`sv_fork_assimilation_pregerado`) em vez do resíduo real.
+# ==============================================================================
+
+"""
+    mads_puro_penalizado_pregerado(x_otimo, x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `NOMAD.solve` (MADS) sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro`
+e `dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)` — mesmo
+experimento gêmeo de [`bfgs_puro_penalizado_pregerado`](@ref): `x_otimo` é o
+`ng` "verdadeiro" usado para gerar os dados de referência.
+
+Mesma configuração do bloco MADS de `comparar_bfgs_spg_bobyqa_mads`
+(`ffjm2.jl`): caixa nativa via `lower_bound`/`upper_bound`, `initial_mesh_size
+= rhobeg`, `min_mesh_size = rhoend`, `max_bb_eval = f_calls_limit`. Como
+`NOMAD.solve` pode devolver `x_sol === nothing` quando nenhum ponto factível é
+aceito, o melhor ponto avaliado (`best_point_mads`) é usado como reserva.
+MADS não usa gradiente — `gradient` no retorno é calculado à parte (via
+`ForwardDiff.gradient!` sobre o objetivo penalizado) só para permitir
+comparação com `bfgs_puro_penalizado_pregerado`, e não conta para
+`function_evaluations`/`gradient_evaluations`. O formato de retorno segue o
+de `bfgs_puro_penalizado_pregerado` para ficar comparável.
+"""
+function mads_puro_penalizado_pregerado(
+    x_otimo::AbstractVector,
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    rhobeg::Real = 0.005,
+    rhoend::Real = 1e-6,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+    best_value_mads = Ref(Inf)
+    best_point_mads = copy(x)
+
+    raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    objective_mads = function (x)
+        value = Float64(objective(x))
+        if value < best_value_mads[]
+            best_value_mads[] = value
+            best_point_mads .= x
+        end
+        return true, true, [value]
+    end
+
+    options_mads = NOMAD.NomadOptions(display_degree = 0, max_bb_eval = Int(f_calls_limit))
+    problem_mads = NOMAD.NomadProblem(
+        dim, 1, ["OBJ"], objective_mads,
+        input_types = fill("R", dim),
+        lower_bound = lb, upper_bound = ub,
+        min_mesh_size = fill(Float64(rhoend), dim),
+        initial_mesh_size = fill(Float64(rhobeg), dim),
+        options = options_mads,
+    )
+
+    result_mads = NOMAD.solve(problem_mads, x)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    minimizer = result_mads.x_sol === nothing ? copy(best_point_mads) : collect(result_mads.x_sol)
+    minimum_value = Float64(objective(minimizer))
+    status = result_mads.status
+    factivel = result_mads.feasible
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = nothing,
+        converged = factivel,
+        status = Symbol(status),
+        execution_time_seconds,
+        rejected_directions = 0,
+        alphas = nothing,
+        solution = result_mads,
+        u = minimizer,
+        objective = minimum_value,
+        stats = result_mads,
+        retcode = Symbol(status),
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
+    )
+end
+
+# ==============================================================================
+# SID-PSM (busca padrão livre de derivada com direções geradas por derivadas
+# de simplex, `tmp/SidPsm.jl`) sobre a mesma penalidade de caixa do
+# experimento gêmeo, no mesmo espírito do bloco BOBYQA/MADS de
+# `comparar_bfgs_spg_bobyqa_mads` em `ffjm2.jl`, só que sobre o resíduo
+# pré-gerado (`sv_fork_assimilation_pregerado`) em vez do resíduo real.
+# ==============================================================================
+
+"""
+    sidpsm_puro_penalizado_pregerado(x_otimo, x0; tbeg=0.0, tend=31.0, kwargs...)
+
+Roda `SidPsm.minimize!` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+onde `residual = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro`
+e `dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)` — mesmo
+experimento gêmeo de [`bfgs_puro_penalizado_pregerado`](@ref): `x_otimo` é o
+`ng` "verdadeiro" usado para gerar os dados de referência.
+
+A caixa (`lower`/`upper`) é passada nativamente via `SidPsm.LinearDomain`
+(`SidPsm.Problem(x0, 0, 0, lower, upper; func_f=objective)`, problema sem
+restrições não lineares — `m = p = 0`); pontos fora da caixa nem chegam a ser
+avaliados. `f_calls_limit` mapeia para `alg.params.fevals_max`
+(`alg.params.stop_fevals`). O SID-PSM reescala internamente variáveis com
+caixa finita para `[0, 10]` (`alg.scale_x`/`alg.scaling_mask`) — o
+minimizador devolvido já é desfeito dessa escala.
+
+SID-PSM não usa gradiente — `gradient` no retorno é calculado à parte (via
+`ForwardDiff.gradient!` sobre o objetivo penalizado) só para permitir
+comparação com `bfgs_puro_penalizado_pregerado`, e não conta para
+`function_evaluations`/`gradient_evaluations`. O formato de retorno segue o
+de `bfgs_puro_penalizado_pregerado` para ficar comparável.
+"""
+function sidpsm_puro_penalizado_pregerado(
+    x_otimo::AbstractVector,
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    f_calls_limit::Integer = 1000,
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+)
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
+    start_time_ns = time_ns()
+    x = collect(float.(x0))
+    dim = length(x)
+    lb = collect(float.(lower))
+    ub = collect(float.(upper))
+    length(lb) == dim || throw(DimensionMismatch("lower e x0 devem ter o mesmo tamanho"))
+    length(ub) == dim || throw(DimensionMismatch("upper e x0 devem ter o mesmo tamanho"))
+    all(lb .< ub) || throw(ArgumentError("cada limite inferior deve ser menor que o superior"))
+    all(lb .<= x .<= ub) || throw(ArgumentError("x0 deve estar dentro da caixa [lower, upper]"))
+    penalty_weight > 0 || throw(ArgumentError("penalty_weight deve ser positivo"))
+
+    function_evaluations = Ref(0)
+    function_evaluation_time_seconds = Ref(0.0)
+
+    raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
+    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+
+    function objective(x)
+        start_ns = time_ns()
+        value = pen_objective(x)
+        function_evaluations[] += 1
+        function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        return (isfinite(value)) ? value : oftype(value, Inf)
+    end
+
+    problem = SidPsm.Problem(x, 0, 0, lb, ub; func_f = objective)
+    alg = SidPsm.SidPsmAlgorithm(problem)
+    alg.params.stop_fevals = true
+    alg.params.fevals_max = Int(f_calls_limit)
+
+    SidPsm.minimize!(alg, problem)
+    execution_time_seconds = (time_ns() - start_time_ns) / 1e9
+
+    # x0 rejeitado por não-finitude (isfinite(value) ? value : Inf em
+    # `objective`, ver `SidPsm.initialization!`) deixa `alg.x_current` vazio
+    # — cai de volta em `x` (o único ponto disponível) em vez de indexar um
+    # vetor vazio.
+    minimizer = if isempty(alg.x_current)
+        copy(x)
+    else
+        m = copy(alg.x_current)
+        if alg.scale_x
+            mask = alg.scaling_mask
+            m[mask] = (m[mask] ./ 10) .* (ub[mask] .- lb[mask]) .+ lb[mask]
+        end
+        m
+    end
+    minimum_value = alg.f_obj_current
+
+    final_residual = raw_residual(minimizer)
+    config = ForwardDiff.GradientConfig(pen_objective, minimizer, ForwardDiff.Chunk{dim}())
+    final_gradient = similar(minimizer, Float64)
+    ForwardDiff.gradient!(final_gradient, pen_objective, minimizer, config)
+
+    converged = alg.alfa < alg.params.tol_alfa
+    status = converged ? :alfa_tolerance_reached : :fevals_limit_reached
+    mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
+        function_evaluation_time_seconds[] / function_evaluations[]
+
+    return (;
+        minimizer,
+        minimum = minimum_value,
+        residual = final_residual,
+        gradient = final_gradient,
+        hessians = nothing,
+        iterations = alg.iter,
+        converged,
+        status,
+        execution_time_seconds,
+        rejected_directions = alg.iter_uns,
+        alphas = nothing,
+        solution = alg,
+        u = minimizer,
+        objective = minimum_value,
+        stats = alg,
+        retcode = status,
+        function_evaluations = function_evaluations[],
+        gradient_evaluations = 0,
+        residual_evaluations = function_evaluations[],
+        function_evaluation_time_seconds = mean_function_evaluation_time_seconds,
+        gradient_evaluation_time_seconds = 0.0,
+        total_function_evaluation_time_seconds = function_evaluation_time_seconds[],
+        total_gradient_evaluation_time_seconds = 0.0,
+    )
+end
+
+# ==============================================================================
+# Comparação de BFGS, BOBYQA, MADS e ffjm2 num único chute inicial —
+# experimento gêmeo (`*_pregerado`) ou dados reais (`ffjm2.jl`). As métricas
+# (RMSD, gradient_norm) são recalculadas de forma uniforme a partir do
+# resíduo bruto (sem penalidade) no minimizador de cada método, para
+# comparação direta independente de cada solver usar penalidade de caixa
+# internamente ou não — mesma ideia de `record!`/`raw_metrics` em
+# `comparar_bfgs_spg_bobyqa_mads`/`comparar_ffjm2_bfgs` (`ffjm2.jl`).
+#
+# ffjm2 minimiza `raw_residual` diretamente (sem `sv_box_penalty`), igual ao
+# uso de `ffjm2` em `comparar_ffjm2_bfgs` — os outros três solvers usam a
+# penalidade de caixa nativamente ou via `sv_box_penalty` (ver docstring de
+# cada `*_puro_penalizado*`).
+# ==============================================================================
+
+function _comparar_solvers(
+    raw_residual::Function,
+    dim::Integer,
+    output,
+    solver_runs,
+)
+    csv_field(value) = begin
+        text = value isa AbstractVector ? repr(collect(value)) : string(value)
+        occursin(r"[,\"\n\r]", text) ? "\"$(replace(text, '\"' => "\"\""))\"" : text
+    end
+    header = (
+        "method", "dimension", "RMSD", "gradient_norm", "execution_time_seconds",
+        "function_evaluations", "gradient_evaluations", "converged", "status", "f_x", "minimizer",
+    )
+
+    function metrics(x)
+        residual = collect(raw_residual(x))
+        sse = sum(abs2, residual)
+        rmsd = sqrt(sse / length(residual))
+        raw_objective(z) = sum(abs2, raw_residual(z))
+        config = ForwardDiff.GradientConfig(raw_objective, x, ForwardDiff.Chunk{dim}())
+        gradient = ForwardDiff.gradient(raw_objective, x, config)
+        return (; rmsd, gradient_norm = norm(gradient))
+    end
+
+    mkpath(dirname(output))
+    rows = NamedTuple[]
+    open(output, "w") do io
+        write(io, join(header, ','), '\n')
+        for (method, run) in solver_runs
+            println("Executando $method")
+            r = run()
+            m = metrics(r.minimizer)
+            row = (;
+                method, dimension = dim, RMSD = m.rmsd, gradient_norm = m.gradient_norm,
+                execution_time_seconds = r.execution_time_seconds,
+                function_evaluations = r.function_evaluations,
+                gradient_evaluations = r.gradient_evaluations,
+                converged = r.converged, status = string(r.status),
+                f_x = r.minimum, minimizer = copy(r.minimizer),
+            )
+            push!(rows, row)
+            write(io, join(csv_field.(values(row)), ','), '\n')
+            flush(io)
+            println(
+                "  minimizer=$(row.minimizer) RMSD=$(row.RMSD) fevals=$(row.function_evaluations) ",
+                "tempo=$(round(row.execution_time_seconds, digits=1))s status=$(row.status)",
+            )
+        end
+    end
+
+    println("Comparação salva em: $output")
+    return (; rows, output)
+end
+
+"""
+    comparar_solvers_pregerado(x_otimo, x0; kwargs...)
+
+Compara BFGS, BOBYQA, MADS (`*_puro_penalizado_pregerado`,
+`sv_teste_pregenered.jl`) e `ffjm2` no experimento gêmeo definido por
+`x_otimo` (mesma convenção de [`bfgs_puro_penalizado_pregerado`](@ref):
+`x_otimo` gera os dados de referência via `sv_fork_dados_pregerados`, `x0` é
+o chute inicial da otimização). Cada `*_puro_penalizado_pregerado` regenera
+os dados de referência (`sv_fork_dados_pregerados`) independentemente — uma
+simulação "verdade" extra por solver, negligenciável frente ao custo dos
+`f_calls_limit` avaliações de cada otimização.
+
+`f_calls_limit`/`maxiter` controlam o orçamento de avaliações de BFGS,
+BOBYQA e MADS; `ffjm2_maxiter` controla o número de iterações
+externas de `ffjm2` (cada uma custando ao menos 1 avaliação de resíduo, mais
+em caso de rejeição por μ). O resultado é salvo em `output` (CSV) e também
+devolvido em `rows`.
+"""
+function comparar_solvers_pregerado(
+    x_otimo::AbstractVector,
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    output = normpath(joinpath(
+        @__DIR__, "..", "results", "comparacao_solvers_pregerado_dim$(length(x0)).csv",
+    )),
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    g_tol::Real = 1e-4,
+    rhobeg::Real = 0.01,
+    rhoend::Real = 1e-6,
+    ffjm2_maxiter::Integer = 500,
+    ffjm2_options = (;),
+    show_trace::Bool = true,
+)
+    dim = length(x0)
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
+    raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
+
+    solver_runs = (
+        ("BFGS", () -> bfgs_puro_penalizado_pregerado(
+            x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit, g_tol,
+            penalty_weight, lower, upper, show_trace,
+        )),
+        ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
+            x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+        )),
+        ("MADS", () -> mads_puro_penalizado_pregerado(
+            x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+        )),
+        ("ffjm2", function ()
+            external_evaluations = Ref(0)
+            counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
+            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, show_trace, ffjm2_options...)
+            return (; r.minimizer, r.minimum, r.execution_time_seconds,
+                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status)
+        end),
+    )
+
+    return _comparar_solvers(raw_residual, dim, output, solver_runs)
+end
+
+"""
+    comparar_solvers_real(x0; kwargs...)
+
+Compara BFGS (`bfgs_puro_penalizado`), BOBYQA (`bobyqa_puro_penalizado`),
+MADS (`mads_puro_penalizado`) e `ffjm2` sobre dados reais
+(`sv_fork_assimilation`, `ffjm2.jl`) — mesma ideia de
+[`comparar_solvers_pregerado`](@ref), mas sem `x_otimo` (não é experimento
+gêmeo). `bfgs_puro_penalizado` ignora `tbeg`/`tend` (fixos em `0.0`/`31.0`
+dentro da própria função); os demais solvers usam os valores passados aqui.
+"""
+function comparar_solvers_real(
+    x0::AbstractVector;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    output = normpath(joinpath(
+        @__DIR__, "..", "results", "comparacao_solvers_real_dim$(length(x0)).csv",
+    )),
+    penalty_weight::Real = 1e6,
+    lower::AbstractVector = zeros(length(x0)),
+    upper::AbstractVector = fill(0.5, length(x0)),
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    g_tol::Real = 1e-4,
+    rhobeg::Real = 0.01,
+    rhoend::Real = 1e-6,
+    ffjm2_maxiter::Integer = 500,
+    ffjm2_options = (;),
+    show_trace::Bool = true,
+)
+    dim = length(x0)
+    raw_residual(x) = sv_fork_assimilation(x, tbeg, tend, nothing).erro
+
+    solver_runs = (
+        ("BFGS", () -> bfgs_puro_penalizado(
+            x0; maxiter, f_calls_limit, g_calls_limit, g_tol,
+            penalty_weight, lower, upper, show_trace,
+        )),
+        ("BOBYQA", () -> bobyqa_puro_penalizado(
+            x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+        )),
+        ("MADS", () -> mads_puro_penalizado(
+            x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+        )),
+        ("ffjm2", function ()
+            external_evaluations = Ref(0)
+            counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
+            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, show_trace, ffjm2_options...)
+            return (; r.minimizer, r.minimum, r.execution_time_seconds,
+                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status)
+        end),
+    )
+
+    return _comparar_solvers(raw_residual, dim, output, solver_runs)
+end
+
+# ==============================================================================
+# Presets dos 4 cenários de comparação (BFGS/BOBYQA/MADS/ffjm2)
+# discutidos na sessão: experimento gêmeo em dimensão 2 e 10, e dados reais em
+# dimensão 3 e 10. Mesma ideia de `mads_two_dim_problem`/`bobyqa_full_dim_problem`
+# (`MADS_application.jl`/`BOBYQA_application.jl`): parâmetros fixos por cima
+# de um executor genérico (`comparar_solvers_pregerado`/`comparar_solvers_real`).
+#
+# Orçamento reduzido (`f_calls_limit=100`, `maxiter=30`, `g_calls_limit=30`,
+# `ffjm2_maxiter=30`) escolhido porque uma avaliação de resíduo não-divergente
+# a `tend=31` custa ~12s (~2.68M passos de dt=1s) — o orçamento padrão do
+# repositório (`f_calls_limit=1000`) levaria horas por solver.
+# ==============================================================================
+
+"""
+    comparar_solvers_twin_dim2(; kwargs...)
+
+Experimento gêmeo em dimensão 2: `x_otimo = [0.2, 0.15]`, `x0 = fill(0.09, 2)`.
+Ver [`comparar_solvers_pregerado`](@ref).
+"""
+function comparar_solvers_twin_dim2(;
+    x_otimo::AbstractVector = [0.2, 0.15],
+    x0::AbstractVector = fill(0.09, 2),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    ffjm2_maxiter::Integer = 500,
+    show_trace::Bool = false,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim2.csv")),
+    kwargs...,
+)
+    return comparar_solvers_pregerado(
+        x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
+        ffjm2_maxiter, show_trace, output, kwargs...,
+    )
+end
+
+"""
+    comparar_solvers_twin_dim10(; kwargs...)
+
+Experimento gêmeo em dimensão 10: `x_otimo = range(0.12, 0.07, length=10)`
+(perfil **decrescente**), `x0 = fill(0.09, 10)`. Perfis crescentes de Manning
+ao longo do trecho (rugosidade menor a montante, maior a jusante) divergem
+antes de `tend=31` mesmo com variação pequena — testado manualmente com
+várias faixas (`0.06`–`0.14`, `0.07`–`0.12`, `0.075`–`0.105`, `0.08`–`0.10`,
+todas crescentes, todas divergiram). Perfis decrescentes na mesma ordem de
+grandeza são estáveis. Ver [`comparar_solvers_pregerado`](@ref).
+"""
+function comparar_solvers_twin_dim10(;
+    x_otimo::AbstractVector = collect(range(0.12, 0.07, length = 10)),
+    x0::AbstractVector = fill(0.09, 10),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    ffjm2_maxiter::Integer = 500,
+    show_trace::Bool = true,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim10.csv")),
+    kwargs...,
+)
+    return comparar_solvers_pregerado(
+        x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
+        ffjm2_maxiter, show_trace, output, kwargs...,
+    )
+end
+
+"""
+    comparar_solvers_real_dim3(; kwargs...)
+
+Dados reais em dimensão 3: `x0 = fill(0.09, 3)` (mesmo chute inicial de
+`comparar_ffjm2_bfgs`, `ffjm2.jl`). Ver [`comparar_solvers_real`](@ref).
+"""
+function comparar_solvers_real_dim3(;
+    x0::AbstractVector = fill(0.09, 3),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    ffjm2_maxiter::Integer = 500,
+    show_trace::Bool = false,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_real_dim3.csv")),
+    kwargs...,
+)
+    return comparar_solvers_real(
+        x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
+        ffjm2_maxiter, show_trace, output, kwargs...,
+    )
+end
+
+"""
+    comparar_solvers_real_dim10(; kwargs...)
+
+Dados reais em dimensão 10: `x0 = fill(0.09, 10)`. Ver [`comparar_solvers_real`](@ref).
+"""
+function comparar_solvers_real_dim10(;
+    x0::AbstractVector = fill(0.09, 10),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    maxiter::Integer = 500,
+    f_calls_limit::Integer = 1000,
+    g_calls_limit::Integer = 500,
+    ffjm2_maxiter::Integer = 500,
+    show_trace::Bool = false,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_real_dim10.csv")),
+    kwargs...,
+)
+    return comparar_solvers_real(
+        x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
+        ffjm2_maxiter, show_trace, output, kwargs...,
+    )
+end
+
+
