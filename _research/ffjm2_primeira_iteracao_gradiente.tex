@@ -106,9 +106,9 @@ Hence
     \label{eq:asymptotic}
 \end{equation}
 
-In words: \emph{for $\sigma$ large enough, the solution of the degenerate
+In words, for $\sigma$ large enough, the solution of the degenerate
 $k=0$ subproblem \eqref{eq:gn} already is, to leading order, a
-steepest-descent step of length $\approx1/2\sigma$} --- the two are
+steepest-descent step of length $\approx1/2\sigma$. The two are
 asymptotically the same computation. This is a direct consequence of
 \eqref{eq:gn}'s own closed form, entirely internal to Algorithm 4.1.
 
@@ -116,31 +116,8 @@ In practice, the rejection ladder $\sigma_0,\ \sigma_{j+1}=\gamma\sigma_j$
 ($\gamma>1$ the growth factor) tries $s(\sigma_0), s(\sigma_1),\dots$
 until one is accepted. By Proposition B, once $\sigma_j\gg\norm{A}/2$ the
 successive trials are already essentially parallel to $-g$ and shrink by
-the fixed factor $1/\gamma$ --- so once it reaches that scale, the ladder
-is already behaving like a geometric backtracking line search along $-g$.
-Below that scale, though --- which includes $\sigma_0$ itself whenever
-$\sigma_0$ (a fixed constant, unrelated to the problem at hand) is not
-already $\gg\norm{A}/2$ --- $s(\sigma_0)$ is a perfectly valid descent
-direction (Lemma A) but generally \emph{not} aligned with $-g$, and its
-length is not calibrated to $\norm{g}$ at all: whether it is accepted on
-the first try is essentially a coincidence of scale, not a controlled
-property of the method.
-
-Replacing the $k=0$ subproblem by an explicit Armijo line search along
-$-g$ therefore does not change what the method is doing once $\sigma$ is
-large --- it is, to leading order, the same computation. What it removes
-is the uncalibrated, possibly wasted, low-$\sigma$ rejections at the start
-of the ladder, by searching directly along the direction
-\eqref{eq:asymptotic} shows the ladder is heading toward anyway, with a
-step-length search (quadratic interpolation) that is more
-sample-efficient than a fixed geometric factor $1/\gamma$. It is also
-computationally cheaper: each rejected $\sigma$ in the ladder re-invokes
-the general-purpose numerical solver used for the full quartic subproblem
-(which explores several random restarts to guard against spurious local
-minima), even though at $H_i=0$ the subproblem has the trivial closed
-form $s(\sigma)=-(A+2\sigma I)^{-1}g$ above --- a backtracking line search
-only needs cheap residual evaluations $F(x^0+\alpha p)$ to test
-sufficient decrease.
+the fixed factor $1/\gamma$, so once it reaches that scale, the ladder
+is already behaving like a backtracking line search along $-g$. Make a lineseach along $-g$ is a good optiom, becaus the next model will use a $\sigma_1 = \sigma_0/10$. If, the first step need to be small, $\sigma_0$ will be big and the next model can be afected. 
 
 
 \begin{thebibliography}{9}

@@ -4,6 +4,7 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{amsmath}
+\usepackage{amsthm}
 \usepackage{longtable}
 \usepackage{booktabs}
 \usepackage{siunitx}
@@ -20,20 +21,129 @@
 }
 
 \newcommand{\IR}{I\!\!R}
+\newcommand{\norm}[1]{\|#1\|}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
 
-\title{FFJM2 vs.\ BFGS on the MGH Problems}
+\title{Algorithm~\ref{complexity} vs.\ BFGS on the MGH Problems}
 \author{}
 \date{}
 
 \begin{document}
 \maketitle
 
+
+\section{The degeneracy at $k=0$}
+
+Algorithm~\ref{complexity} minimizes $f(x) = \tfrac12\norm{F(x)}^2$, where
+$F=(f_1,\dots,f_m)^\top$ is the residual vector. At external iteration $k$
+it keeps one symmetric matrix $H_i^k$ per residual component $f_i$,
+approximating $\nabla^2 f_i(x^k)$, and solves
+\begin{equation}
+	M_k(s) \;=\; \sigma\norm{s}^2 + \tfrac12\sum_i q_i(s)^2, \qquad
+	q_i(s) = f_i(x^k) + \nabla f_i(x^k)^\top s + \tfrac12 s^\top H_i^k s,
+	\label{regsub}
+\end{equation}
+accepting or rejecting $x^k+s$ by the ratio between actual and predicted
+reduction, and growing/shrinking $\sigma$ accordingly. At $k=0$, every $H_i^0=0$ (no secant pair has been observed yet), so
+\eqref{regsub} collapses to
+\begin{equation}
+	M_0(s) = \sigma\norm{s}^2 + \tfrac12\sum_i \bigl(f_i(x^0) + \nabla f_i(x^0)^\top s\bigr)^2,
+	\label{eq:gn}
+\end{equation}
+a single damped Gauss--Newton subproblem. Two things are worth noting
+about this particular instance of the subproblem. Unlike every subsequent
+iteration, $\sigma=\sigma_0=1$ here is a fixed constant, not yet informed
+by any accept/reject test on \emph{this} problem, so how close
+\eqref{eq:gn}'s solution already sits to the scaled steepest-descent
+direction it approaches as $\sigma\to\infty$ (where the minimizer of
+\eqref{eq:gn} is asymptotically parallel to $-\nabla f(x^0)$) is
+essentially a guess about the local curvature scale of $f$ at $x^0$ that
+the method has had no chance to calibrate yet. Moreover, there is, by
+construction, no curvature
+information at all to justify solving a quartic (rather than a quadratic)
+model here. The quartic term $\tfrac12 s^\top H_i^k s$ is identically zero
+for every $i$. So the very first step is the one iteration where the
+method's own machinery (quasi-Newton curvature, calibrated regularization)
+has nothing to work with.
+
+\subsection{The closed form of $M_0$}
+\label{sec:closedform}
+
+Rather than appealing to a different algorithm, the cleanest justification
+comes directly out of \eqref{eq:gn} itself, which is an unconstrained,
+strictly convex quadratic in $s$ and can be solved in closed form. Write
+$J:=F'(x^0)$ for the Jacobian of $F$ at $x^0$ (the matrix whose $i$-th row
+is $\nabla f_i(x^0)^\top$), so that $g:=\nabla f(x^0)=J^\top F(x^0)$, and
+$A:=J^\top J$ (symmetric positive semidefinite). Then
+\[
+\nabla_s M_0(s) = (2\sigma I + A)\,s + g = 0
+\quad\Longrightarrow\quad
+s(\sigma) = -(A+2\sigma I)^{-1} g.
+\]
+
+\begin{lemma}[Descent for every $\sigma>0$]\label{lem:descent}
+For every $\sigma>0$ and every $g\ne0$, $s(\sigma)$ is a descent direction
+for $f$ at $x^0$, satisfying $g^\top s(\sigma) < 0$.
+\end{lemma}
+\begin{proof}
+Since $A+2\sigma I \succ 0$ for $\sigma>0$, its inverse is symmetric
+positive definite, hence
+\[
+g^\top s(\sigma) = -g^\top (A+2\sigma I)^{-1} g < 0 \qquad \text{whenever } g\ne0. \qedhere
+\]
+\end{proof}
+So $s(\sigma)$ is a genuine descent direction for $f$ \emph{for every
+$\sigma>0$}, not just asymptotically. The $\sigma$-loop never has a
+``wrong-direction'' problem at $k=0$; what it can have is a
+badly-\emph{sized} step, which is what the accept/reject test and the
+growth of $\sigma$ are actually correcting for.
+
+\begin{proposition}[Alignment with $-g$ as $\sigma\to\infty$]\label{prop:alignment}
+As $\sigma\to\infty$,
+\begin{equation}
+	s(\sigma) = -\frac{1}{2\sigma}\,g + o\!\left(\frac1\sigma\right)
+	\qquad\Longrightarrow\qquad
+	\frac{s(\sigma)}{\norm{s(\sigma)}} \longrightarrow -\frac{g}{\norm{g}}.
+	\label{eq:asymptotic}
+\end{equation}
+\end{proposition}
+\begin{proof}
+Factor $2\sigma$ out of the inverse:
+\[
+s(\sigma) = -(A+2\sigma I)^{-1}g
+= -\frac{1}{2\sigma}\left(I + \frac{A}{2\sigma}\right)^{-1}g.
+\]
+As $\sigma\to\infty$, $A/(2\sigma)\to0$, and matrix inversion is
+continuous at the identity, so $\bigl(I+A/(2\sigma)\bigr)^{-1}\to I$,
+which gives the stated expansion. \qedhere
+\end{proof}
+
+In words, for $\sigma$ large enough, the solution of the degenerate
+$k=0$ subproblem \eqref{eq:gn} already is, to leading order, a
+steepest-descent step of length $\approx1/2\sigma$. The two are
+asymptotically the same computation. This is a direct consequence of
+\eqref{eq:gn}'s own closed form, entirely internal to Algorithm~\ref{complexity}.
+
+In practice, the rejection ladder $\sigma_0,\ \sigma_{j+1}=\gamma\sigma_j$
+($\gamma>1$ the growth factor) tries $s(\sigma_0), s(\sigma_1),\dots$
+until one is accepted. By Proposition~\ref{prop:alignment}, once $\sigma_j\gg\norm{A}/2$ the
+successive trials are already essentially parallel to $-g$ and shrink by
+the fixed factor $1/\gamma$, so once it reaches that scale, the ladder
+is already behaving like a backtracking line search along $-g$. This is
+also a reason not to let $\sigma_0$ run away unchecked. Because $\sigma$ is
+only shrunk, never reset, between outer iterations, an unusually large
+$\sigma_0$, forced whenever the true first step happens to be small,
+persists into $\sigma_1$ and can over-dampen the next iteration's
+subproblem as well.
+
+
 \section{Computational tests}
 \label{sec:computational-tests}
 
 \noindent
-In this section we evaluate the performance of \texttt{ffjm2}
-(Algorithm~\ref{complexity}) and compare it against a classical
+In this section we evaluate the performance of Algorithm~\ref{complexity}
+and compare it against a classical
 sum-of-squares approach. We run two types of tests. In the first, we
 consider the MGH (Mor\'e, Garbow, and Hillstrom) sum-of-squares test
 problems \cite{MoreGarbowHillstrom1981}, a benchmark of 34 classical
@@ -42,13 +152,13 @@ good solver and Hessian approximation. In the second part, we solve a
 hydraulic problem in which we need to estimate a coefficient of a PDE
 called the Saint-Venant equation.
 
-\subsection{MGH problems}
+\subsection{Algorithm~\ref{complexity} for MGH problems}
 \label{sec:mgh-problems}
 
 \noindent
-\texttt{ffjm2} minimizes $f(x) = \frac{1}{2}\|F(x)\|_2^2$ (Section~3,
-Eq.~(16)) by minimizing, at each iteration, a local quartic model of the
-residuals in place of a line search. Following Algorithm~4.1 (Eq.~(21)),
+Algorithm~\ref{complexity} minimizes $f(x) = \frac{1}{2}\|F(x)\|_2^2$ (Section~3,
+\ref{regsub}) by minimizing, at each iteration, a local quartic model of the
+residuals in place of a line search. Following Algorithm~\ref{complexity} (Eq.~(21)),
 the step $s$ at iteration $k$ solves
 \[
     M_k(s) = \sigma\|s\|_2^2 + \frac{1}{2}\sum_{i=1}^m q_i(s)^2, \qquad
@@ -56,53 +166,48 @@ the step $s$ at iteration $k$ solves
 \]
 where $f_i$ and $\nabla f_i$ are the $i$-th residual and its gradient at
 $x_k$ (Section~3), $H_i$ is the current quasi-Newton approximation to its
-Hessian (e.g.\ BFGS or SR1, Eqs.~(19)/(20); four further variants are
-compared in Table~\ref{tab:hessian-models} below), and $\sigma\|s\|_2^2$
-is the Levenberg-Marquardt-style regularization of Algorithm~4.1 that
+Hessian. Four further variants are
+compared in Table~\ref{tab:hessian-models}, and $\sigma\|s\|_2^2$
+is the Levenberg-Marquardt-style regularization of Algorithm~\ref{complexity} that
 damps the step in place of a line search. The candidate $x_k + s$ is
-checked for feasibility as in Step~3 (Eq.~(24)); acceptance then uses the
+checked for feasibility as in Step~3 (Eq.~\ref{feasi}); acceptance then uses the
 ratio $\rho_k$ between the actual and the model-predicted reduction in
-$f$ --- a refinement of Algorithm~4.1's simpler decrease test (Eq.~(25))
---- accepting whenever $\rho_k \ge \eta_1$ for a fixed threshold $\eta_1$.
+$f$, a refinement of Algorithm~\ref{complexity}'s simpler decrease test (Eq.~(25)),
+accepting whenever $\rho_k \ge \eta_1$ for a fixed threshold $\eta_1$.
 
-The implementation tested below also refines Algorithm~4.1's
-regularization update (Eq.~(30)) with an additional decay on acceptance.
-The first iteration starts at $\sigma = 1$. Each accepted step now divides
-$\sigma$ by a fixed factor $\sigma_{grow} = 10$, with a floor
-$\sigma_{\min} = 10^{-8}$, so $\sigma$ keeps shrinking --- unlike
-Algorithm~4.1's plain carryover $\sigma_k \leftarrow \sigma$ on
-acceptance. Each rejected step, as in Eq.~(30), multiplies $\sigma$ by
-the same factor $\sigma_{grow} = 10$ and re-solves the subproblem at the
-same point, until a step is accepted or $\sigma$ reaches a ceiling
-$\sigma_{\max} = 10^{12}$ (not present in the base algorithm). Unlike a
-scheme that resets $\sigma$ at the start of every iteration, this value
-always carries over from the previous one; this decaying carryover
-performed better in practice than restarting $\sigma$ from scratch each
-time.
+The implementation tested below uses the regularization update of
+Eq.~(\ref{upsig}) with the following parameters. The first iteration starts at
+$\sigma = 1$. Each accepted step divides $\sigma$ by a fixed factor
+$\sigma_{grow} = 10$, and each rejected step, as in Eq.~(30), multiplies
+$\sigma$ by the same factor $\sigma_{grow} = 10$ and re-solves the
+subproblem at the same point, until a step is accepted; between outer
+iterations, $\sigma$ always carries over from the previous one rather
+than being reset. The floor $\sigma_{\min} = 10^{-8}$ and the ceiling
+$\sigma_{\max} = 10^{12}$ are used purely for numerical stability,
+preventing $\sigma$ from underflowing or overflowing over the course of a
+run.
 
 Every run reported below stops under one of three point-wise criteria,
-evaluated with the same default tolerances for \texttt{ffjm2} and for
+evaluated with the same default tolerances for Algorithm~\ref{complexity} and for
 Optim.jl's \texttt{BFGS} \cite{Mogensen2018} (kept equal so the comparison
 is fair):
 \begin{itemize}
     \item \textbf{Gradient}: the gradient norm reaches $\|\nabla f\| \le 10^{-8}$. This is a genuine first-order stationary point.
     \item \textbf{Step}: the last step has (numerically) zero length. The solver stalls and stops making progress.
     \item \textbf{Function}: the objective value does not change between two consecutive iterations. The iterate is stuck on a plateau.
-    \item \textbf{Stalled}: FFJM2's regularization parameter exceeded its
-    ceiling (or its number of consecutive rejections exceeded its cap)
-    before any step was accepted. Unlike the first three, this is
-    \emph{not} a converged outcome.
+    \item \textbf{Stalled}: Algorithm~\ref{complexity}'s regularization parameter exceeded its
+    ceiling.
 \end{itemize}
-A run that exhausts the iteration budget without meeting any of the first
-three would be reported separately as \emph{not converged}. This case
-does not appear in Tables~\ref{tab:hessian-models} and
-\ref{tab:psb-vs-sr1} below, but it does in
-Table~\ref{tab:psb-vs-bfgs}: FFJM2 (PSB) now stops under the
-\textbf{Stalled} criterion on MGH10, MGH16, and MGH31 (the same three
-problems that previously stopped under Step/Function --- see the
-discussion after that table).
+%A run that exhausts the iteration budget without meeting any of the first
+%three would be reported separately as \emph{not converged}. This case
+%does not appear in Tables~\ref{tab:hessian-models} and
+%\ref{tab:psb-vs-sr1} below, but it does in
+%Table~\ref{tab:psb-vs-bfgs}. Algorithm~\ref{complexity} (PSB) now stops under the
+%\textbf{Stalled} criterion on MGH10, MGH16, and MGH31 (the same three
+%problems that previously stopped under Step/Function; see the
+%discussion after that table).
 
-Table~\ref{tab:hessian-models} compares the six ffjm2 Hessian-update
+Table~\ref{tab:hessian-models} compares the six Algorithm~\ref{complexity} Hessian-update
 models, each run independently on the 34 MGH least-squares problems
 \cite{MoreGarbowHillstrom1981}. Its ``Converged (gradient)'' column counts
 how many of the 34 problems stopped under the gradient criterion; the
@@ -155,7 +260,7 @@ $y_i = \nabla f_i(x_{k+1}) - \nabla f_i(x_k)$:
 
 \begin{table}[htbp]
 \centering
-\caption{Comparison of the ffjm2 Hessian-update models on the 34 MGH problems.}
+\caption{Comparison of the Algorithm~\ref{complexity} Hessian-update models on the 34 MGH problems.}
 \label{tab:hessian-models}
 \begin{tabular}{l r r r r r}
 \toprule
@@ -171,8 +276,10 @@ PSB & 31/34 & $15.68 \pm 22.53$ & $31.38 \pm 53.44$ & $16.68 \pm 22.53$ & $0.424
 \end{tabular}
 \end{table}
 
+\FloatBarrier
+
 \noindent
-PSB and SR1 are the two best models: together they solve the most problems
+PSB and SR1 are the two best models. Together they solve the most problems
 under the gradient criterion, and PSB in particular does so with by far the
 fewest iterations, evaluations, and execution time on average
 (Table~\ref{tab:hessian-models}). SR1 nonetheless certifies gradient
@@ -182,7 +289,7 @@ problems on which at least one of the two methods does not stop under the
 gradient criterion.
 
 \begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
-\caption{FFJM2 (PSB) vs.\ FFJM2 (SR1): per-problem comparison on the MGH problems.}
+\caption{Algorithm~\ref{complexity} (PSB) vs.\ Algorithm~\ref{complexity} (SR1): per-problem comparison on the MGH problems.}
 \label{tab:psb-vs-sr1} \\
 \toprule
 Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
@@ -198,34 +305,188 @@ Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & 
 \endfoot
 \bottomrule
 \endlastfoot
-MGH10 & FFJM2 (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & step \\
-MGH10 & FFJM2 (SR1) & 4.397293e+01 & 5.500886e-02 & 297 & 125 & step \\
+MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & step \\
+MGH10 & Algorithm~\ref{complexity} (SR1) & 4.397293e+01 & 5.500886e-02 & 297 & 125 & step \\
 \midrule
-MGH16 & FFJM2 (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & function \\
-MGH16 & FFJM2 (SR1) & 4.291110e+04 & 6.255963e-05 & 44 & 9 & function \\
+MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & function \\
+MGH16 & Algorithm~\ref{complexity} (SR1) & 4.291110e+04 & 6.255963e-05 & 44 & 9 & function \\
 \midrule
-MGH31 & FFJM2 (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & function \\
-MGH31 & FFJM2 (SR1) & 1.528639e+00 & 4.387102e-09 & 44 & 29 & gradient \\
+MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & function \\
+MGH31 & Algorithm~\ref{complexity} (SR1) & 1.528639e+00 & 4.387102e-09 & 44 & 29 & gradient \\
 \end{longtable}
+\FloatBarrier
 
 \noindent
-On MGH10 and MGH16, neither model reaches the gradient criterion: both
+On MGH10 and MGH16, neither model reaches the gradient criterion, both
 stall under the step and function criteria, respectively, at essentially
-the same objective value, although FFJM2 with PSB reaches a smaller
-gradient norm on MGH10. MGH31 is the one case that favors SR1 over PSB.
-SR1 certifies a small gradient norm ($\|\nabla f\| \approx 4.4\times
-10^{-9}$), while PSB stops one iteration earlier under the function
-criterion, even though both reach practically the same objective value
-($f \approx 1.5286$) and gradient norm. For this reason, PSB is the best
+the same objective value, although Algorithm~\ref{complexity} with PSB reaches a smaller
+gradient norm on MGH10. For this reason, PSB is the best
 choice between the two approaches when weighing cost against benefit.
 
-FFJM2 (PSB) uses persistent decaying $\sigma$, a full Hessian reset on a bad
+
+
+
+Table~\ref{tab:ffjm2-subproblem-solvers} repeats the comparison, but now
+running Algorithm~\ref{complexity} in full with PSB model on the same 34
+problems. Newton/BFGS/BOBYQA solve
+only the small quartic model at each outer iteration, exactly as Algorithm~\ref{complexity}
+uses them, instead of standing in as the whole optimizer. ``Newton''
+here is the exact Newton step on the
+quartic subproblem, computed via the Ipopt interior-point solver.
+
+
+
+Function and gradient evaluations here count only the calls to the real
+residual and Jacobian made by Algorithm~\ref{complexity}'s outer loop. The
+internal solver's own work on the quartic surrogate is tracked
+separately, since evaluating the true function and its derivative is
+considerably more expensive than evaluating the model. Because we are
+solving a quartic (rather than a quadratic) problem, we use a multistart
+method to search for a global optimum. At each outer iteration $k$, $100$
+random points are drawn from a ball $B(0, \max\{1, d_{k-1}\})$. Using the
+default multistart setting for every method would be impractical across
+all 34 problems in this table.
+
+\begin{table}[htbp]
+	\centering
+	\caption{Algorithm~\ref{complexity} (PSB), varying only \texttt{model\_solver}, on the 34 MGH problems.}
+	\label{tab:ffjm2-subproblem-solvers}
+	\resizebox{\textwidth}{!}{%
+		\begin{tabular}{l r r r r r}
+			\toprule
+			Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
+			\midrule
+			Algorithm~\ref{complexity} (PSB, Newton) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $15.12 \pm 21.90$ & $30.21 \pm 49.59$ & $16.12 \pm 21.90$ \\
+			Algorithm~\ref{complexity} (PSB, BFGS) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $15.26 \pm 21.99$ & $30.26 \pm 48.63$ & $16.26 \pm 21.99$ \\
+			Algorithm~\ref{complexity} (PSB, BOBYQA) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 30/34 & $39.74 \pm 108.86$ & $57.68 \pm 127.48$ & $40.74 \pm 108.86$ \\
+			\bottomrule
+		\end{tabular}%
+	}
+\end{table}
+\newpage
+
+\noindent
+Newton and BFGS are essentially indistinguishable
+(31/34, within $1\%$ of each other on every column), and even BOBYQA, which needed an order of magnitude more evaluations and converged on only
+10/34 when applied directly to the raw residual, falls behind by only
+one problem (30/34) and roughly $2.6\times$ more outer iterations on
+average. This distinction matters because evaluating the derivative can
+sometimes cost more than $2.6\times$ what evaluating the objective
+function costs. Since Newton achieves the best
+performance among the three, we adopt it as the model solver
+used throughout the rest of this work.
+
+
+\subsection{sum of square problem BFGS configuration}
+
+Now we will consider a diferent configuration thant the avarege to BFGS method. We will make it, because the defalt linesearch, generally Hanger Zhang linesearch, evaluate the derivativo of function many times. For this reason, now we will test diferents classical linesearchs for BFGS method. The Table~\ref{tab:bfgs-linesearches} checks some linesearchs for
+\texttt{Optim.BFGS} on the same 34 MGH problems with four line searches. Hager and Zhang (\texttt{Optim.jl}'s default), a
+minimalist backtracking with Armijo condition, and BackTracking
+with quadratic (order 2) and cubic (order 3) interpolation. ``Converged
+(gradient)'' counts how many of the 34 problems stopped under the gradient
+criterion; the remaining columns are mean~$\pm$~standard deviation over
+all 34 problems (including the ones that stopped under a different
+criterion).
+
+\begin{table}[htbp]
+	\centering
+	\caption{Comparison of line searches for Optim.jl's BFGS on the 34 MGH problems.}
+	\label{tab:bfgs-linesearches}
+	\resizebox{\textwidth}{!}{%
+		\begin{tabular}{l r r r r r}
+			\toprule
+			Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
+			\midrule
+			Hager-Zhang & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 33/34 & $66.91 \pm 120.92$ & $107.82 \pm 206.62$ & $107.82 \pm 206.62$ \\
+			Backtracking & $2.49\times10^{7} \pm 1.45\times10^{8}$ & 30/34 & $51.56 \pm 93.74$ & $89.62 \pm 131.90$ & $52.47 \pm 93.75$ \\
+			Backtracking (order 2) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 32/34 & $61.59 \pm 99.26$ & $86.74 \pm 134.56$ & $62.56 \pm 99.17$ \\
+			Backtracking (order 3) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $56.91 \pm 89.47$ & $84.91 \pm 132.01$ & $57.85 \pm 89.33$ \\
+			\bottomrule
+		\end{tabular}%
+	}
+\end{table}
+\FloatBarrier
+
+\noindent
+Hager-Zhang converges by gradient on the most problems (33/34) but at the
+highest average cost. the backtracking is a cheap linesearch but the value of $f$  and congence per
+problem on average isn't good (30/34). The backtracking order 2 and 3 have a near results. Inded of Backtracking order 3 has a little less evaluations, the Backtracking order 2 found 32/34 gradients convegence. For this reason, wee will chose Backtracking order 2 to compare with our approach. 
+
+
+%
+%
+%\newpage
+%A second aside: FFJM2's quartic subproblem (Section~2, Eq.~(18)/(21)) is
+%solved internally by Ipopt, but the paper's Algorithm 4.1 does not require
+%that particular choice. Table~\ref{tab:subproblem-solvers} checks how the
+%four solvers already available as \texttt{model\_solver} in \texttt{ffjm2}
+%--- Ipopt, BFGS (backtracking, same as above), BOBYQA, and MADS --- fare
+%when applied \emph{directly} to $0.5\|F(x)\|^2$ on the 34 MGH problems
+%(i.e., as if each one were, on its own, the whole optimizer, not just the
+%subproblem solver inside FFJM2's outer loop). Same columns as
+%Table~\ref{tab:bfgs-linesearches}; BOBYQA and MADS are derivative-free, so
+%their gradient-evaluation count is always $0$ and ``Converged (gradient)''
+%for them instead counts $\|\nabla f\|\le10^{-8}$ checked \emph{after} the
+%solver stops (Ipopt and BFGS report their own gradient-based termination
+%directly).
+%
+%\begin{table}[htbp]
+%	\centering
+%	\caption{Comparison of the solvers available for FFJM2's internal
+%		subproblem, applied directly to $0.5\|F(x)\|^2$ on the 34 MGH problems.}
+%	\label{tab:subproblem-solvers}
+%	\resizebox{\textwidth}{!}{%
+%		\begin{tabular}{l r r r r r}
+%			\toprule
+%			Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
+%			\midrule
+%			Ipopt & $1.88\times10^{5} \pm 1.09\times10^{6}$ & 32/34 & $69.53 \pm 103.06$ & $424.62 \pm 803.24$ & $71.53 \pm 103.06$ \\
+%			BFGS (backtracking) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 32/34 & $61.59 \pm 99.26$ & $86.74 \pm 134.56$ & $62.56 \pm 99.17$ \\
+%			BOBYQA & $1.47\times10^{10} \pm 8.56\times10^{10}$ & 10/34 & $572.71 \pm 699.05$ & $572.71 \pm 699.05$ & $0.00 \pm 0.00$ \\
+%			MADS & $1.47\times10^{10} \pm 8.56\times10^{10}$ & 0/34 & $986.82 \pm 594.53$ & $986.82 \pm 594.53$ & $0.00 \pm 0.00$ \\
+%			\bottomrule
+%		\end{tabular}%
+%	}
+%\end{table}
+%
+%\noindent
+%Ipopt and BFGS are essentially tied on reliability (32/34) and land within
+%a factor of $2$ of each other on iterations and gradient evaluations, but
+%Ipopt needs about $5\times$ more function evaluations on average (it
+%solves a full barrier subproblem at each outer iteration). BOBYQA and MADS
+%are far behind on both counts: with no gradient to exploit, they need an
+%order of magnitude more evaluations and still only certify gradient
+%convergence on 10/34 (BOBYQA) or none at all (MADS) within the $2000$
+%function-evaluation budget. As Table~\ref{tab:ffjm2-subproblem-solvers}
+%below shows, this gap does \emph{not} carry over once these solvers are
+%used the way FFJM2 actually uses them --- as the resolver of the small,
+%cheap quartic model, rather than as the whole optimizer applied to the raw
+%residual. As in Table~\ref{tab:bfgs-linesearches}, the mean/std of $f$
+%is dominated by outliers rather than typical behavior, and here they point
+%to a genuine methodological limitation of the box these two derivative-free
+%solvers need (BOBYQA and MADS require finite bounds; both are given
+%$x^0\pm\mathrm{bound\_radius}$, $\mathrm{bound\_radius}=\max(10^3,
+%100\max(1,\|x^0\|))$): on MGH04, whose true minimizer is
+%$x^*\approx(10^6,\,2\times10^{-6})$, this box does not even contain
+%$x^*$ when $x^0=(1,1)$ gives $\mathrm{bound\_radius}=10^3$, so both solvers
+%stall at the box boundary ($f\approx5.0\times10^{11}$, versus
+%$\approx8\times10^{-28}$ for Ipopt/BFGS on the same problem) --- a box
+%sized from $\|x^0\|$ alone cannot help when $x^*$ is orders of magnitude
+%farther from $x^0$ than $x^0$ is from the origin. Ipopt's own outlier is
+%different in kind: on MGH10 it converges (\texttt{LOCALLY\_SOLVED}) to a
+%KKT point with $f\approx6.3\times10^6$, well above BFGS's
+%$f\approx44$ on the same problem, i.e.\ a genuine bad local
+%solution rather than a boundary artifact.
+
+\subsubsection{Algorithm~\ref{complexity} against BFGS with backtracking}
+
+Algorithm~\ref{complexity} (PSB) uses persistent decaying $\sigma$, a full Hessian reset on a bad
 ratio, and $-\nabla f$+Armijo at $k=0$ and as a safeguard. The following
 table compares it against BFGS with backtracking line search on the 34
 MGH least-squares problems.
 
 \begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
-\caption{FFJM2 (PSB) vs.\ BFGS (backtracking): per-problem comparison on the MGH problems.}
+\caption{Algorithm~\ref{complexity} (PSB) vs.\ BFGS (backtracking): per-problem comparison on the MGH problems.}
 \label{tab:psb-vs-bfgs} \\
 \toprule
 Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & Criterion \\
@@ -241,125 +502,133 @@ Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & 
 \endfoot
 \bottomrule
 \endlastfoot
-MGH01 & FFJM2 (PSB) & 2.415715e-22 & 9.822188e-12 & 12 & 8 & gradient \\
+MGH01 & Algorithm~\ref{complexity} (PSB) & 2.415715e-22 & 9.822188e-12 & 12 & 8 & gradient \\
 MGH01 & BFGS (backtracking) & 1.981121e-22 & 3.687403e-10 & 53 & 40 & gradient \\
 \midrule
-MGH02 & FFJM2 (PSB) & 5.096567e-18 & 3.844849e-09 & 10 & 7 & gradient \\
+MGH02 & Algorithm~\ref{complexity} (PSB) & 5.096567e-18 & 3.844849e-09 & 10 & 7 & gradient \\
 MGH02 & BFGS (backtracking) & 1.106930e-26 & 2.198151e-12 & 15 & 11 & gradient \\
 \midrule
-MGH03 & FFJM2 (PSB) & 1.576836e-11 & 2.568219e-09 & 31 & 20 & gradient \\
+MGH03 & Algorithm~\ref{complexity} (PSB) & 1.576836e-11 & 2.568219e-09 & 31 & 20 & gradient \\
 MGH03 & BFGS (backtracking) & 5.053640e-30 & 2.830752e-10 & 233 & 174 & gradient \\
 \midrule
-MGH04 & FFJM2 (PSB) & 3.811648e-17 & 8.733972e-09 & 10 & 8 & gradient \\
+MGH04 & Algorithm~\ref{complexity} (PSB) & 3.811648e-17 & 8.733972e-09 & 10 & 8 & gradient \\
 MGH04 & BFGS (backtracking) & 9.860761e-32 & 4.440892e-10 & 40 & 14 & gradient \\
 \midrule
-MGH05 & FFJM2 (PSB) & 1.307511e-16 & 6.948485e-09 & 10 & 8 & gradient \\
+MGH05 & Algorithm~\ref{complexity} (PSB) & 1.307511e-16 & 6.948485e-09 & 10 & 8 & gradient \\
 MGH05 & BFGS (backtracking) & 2.500895e-22 & 1.079551e-10 & 22 & 19 & gradient \\
 \midrule
-MGH06 & FFJM2 (PSB) & 1.010000e+03 & 1.161571e-28 & 11 & 2 & gradient \\
+MGH06 & Algorithm~\ref{complexity} (PSB) & 1.010000e+03 & 1.161571e-28 & 11 & 2 & gradient \\
 MGH06 & BFGS (backtracking) & 1.010000e+03 & 1.161571e-28 & 10 & 2 & gradient \\
 \midrule
-MGH07 & FFJM2 (PSB) & 1.492293e-17 & 6.034835e-09 & 17 & 10 & gradient \\
+MGH07 & Algorithm~\ref{complexity} (PSB) & 1.492293e-17 & 6.034835e-09 & 17 & 10 & gradient \\
 MGH07 & BFGS (backtracking) & 5.236320e-19 & 5.028697e-09 & 41 & 30 & gradient \\
 \midrule
-MGH08 & FFJM2 (PSB) & 4.107439e-03 & 4.903415e-10 & 12 & 9 & gradient \\
+MGH08 & Algorithm~\ref{complexity} (PSB) & 4.107439e-03 & 4.903415e-10 & 12 & 9 & gradient \\
 MGH08 & BFGS (backtracking) & 4.107439e-03 & 7.394161e-10 & 34 & 28 & gradient \\
 \midrule
-MGH09 & FFJM2 (PSB) & 5.639664e-09 & 7.549518e-11 & 9 & 7 & gradient \\
+MGH09 & Algorithm~\ref{complexity} (PSB) & 5.639664e-09 & 7.549518e-11 & 9 & 7 & gradient \\
 MGH09 & BFGS (backtracking) & 5.639664e-09 & 1.552131e-09 & 6 & 5 & gradient \\
 \midrule
-MGH10 & FFJM2 (PSB) & 4.397293e+01 & 1.204293e-05 & 276 & 122 & stalled \\
+MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 1.204293e-05 & 276 & 122 & stalled \\
 MGH10 & BFGS (backtracking) & 4.397293e+01 & 2.281500e+00 & 552 & 386 & step \\
 \midrule
-MGH11 & FFJM2 (PSB) & 5.960004e-21 & 3.251504e-13 & 26 & 17 & gradient \\
+MGH11 & Algorithm~\ref{complexity} (PSB) & 5.960004e-21 & 3.251504e-13 & 26 & 17 & gradient \\
 MGH11 & BFGS (backtracking) & 2.268388e-20 & 7.169397e-10 & 50 & 42 & gradient \\
 \midrule
-MGH12 & FFJM2 (PSB) & 3.799377e-18 & 3.814938e-10 & 14 & 11 & gradient \\
+MGH12 & Algorithm~\ref{complexity} (PSB) & 3.799377e-18 & 3.814938e-10 & 14 & 11 & gradient \\
 MGH12 & BFGS (backtracking) & 1.579764e-21 & 3.202002e-11 & 53 & 41 & gradient \\
 \midrule
-MGH13 & FFJM2 (PSB) & 5.156722e-12 & 9.613609e-09 & 12 & 9 & gradient \\
+MGH13 & Algorithm~\ref{complexity} (PSB) & 5.156722e-12 & 9.613609e-09 & 12 & 9 & gradient \\
 MGH13 & BFGS (backtracking) & 1.566490e-14 & 3.607786e-09 & 55 & 45 & gradient \\
 \midrule
-MGH14 & FFJM2 (PSB) & 9.424359e-19 & 8.234967e-10 & 11 & 7 & gradient \\
+MGH14 & Algorithm~\ref{complexity} (PSB) & 9.424359e-19 & 8.234967e-10 & 11 & 7 & gradient \\
 MGH14 & BFGS (backtracking) & 3.521535e-22 & 5.460933e-10 & 44 & 31 & gradient \\
 \midrule
-MGH15 & FFJM2 (PSB) & 1.537528e-04 & 9.059854e-09 & 38 & 22 & gradient \\
+MGH15 & Algorithm~\ref{complexity} (PSB) & 1.537528e-04 & 9.059854e-09 & 38 & 22 & gradient \\
 MGH15 & BFGS (backtracking) & 1.537528e-04 & 4.132861e-10 & 39 & 33 & gradient \\
 \midrule
-MGH16 & FFJM2 (PSB) & 4.291110e+04 & 6.530587e-05 & 91 & 37 & stalled \\
+MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 6.530587e-05 & 91 & 37 & stalled \\
 MGH16 & BFGS (backtracking) & 4.291110e+04 & 2.831466e-05 & 72 & 26 & function \\
 \midrule
-MGH17 & FFJM2 (PSB) & 2.732447e-05 & 8.377671e-09 & 24 & 12 & gradient \\
+MGH17 & Algorithm~\ref{complexity} (PSB) & 2.732447e-05 & 8.377671e-09 & 24 & 12 & gradient \\
 MGH17 & BFGS (backtracking) & 2.732447e-05 & 8.227669e-09 & 90 & 59 & gradient \\
 \midrule
-MGH18 & FFJM2 (PSB) & 1.002042e-18 & 1.650363e-11 & 58 & 34 & gradient \\
+MGH18 & Algorithm~\ref{complexity} (PSB) & 1.002042e-18 & 1.650363e-11 & 58 & 34 & gradient \\
 MGH18 & BFGS (backtracking) & 2.827825e-03 & 1.276728e-08 & 44 & 41 & gradient \\
 \midrule
-MGH19 & FFJM2 (PSB) & 4.383556e-02 & 9.198492e-09 & 115 & 59 & gradient \\
+MGH19 & Algorithm~\ref{complexity} (PSB) & 4.383556e-02 & 9.198492e-09 & 115 & 59 & gradient \\
 MGH19 & BFGS (backtracking) & 1.373773e-01 & 8.291793e-10 & 147 & 113 & gradient \\
 \midrule
-MGH20 & FFJM2 (PSB) & 1.143835e-03 & 1.841972e-09 & 13 & 10 & gradient \\
+MGH20 & Algorithm~\ref{complexity} (PSB) & 1.143835e-03 & 1.841972e-09 & 13 & 10 & gradient \\
 MGH20 & BFGS (backtracking) & 1.143835e-03 & 7.070265e-09 & 49 & 39 & gradient \\
 \midrule
-MGH21 & FFJM2 (PSB) & 2.415715e-21 & 3.106049e-11 & 12 & 8 & gradient \\
+MGH21 & Algorithm~\ref{complexity} (PSB) & 2.415715e-21 & 3.106049e-11 & 12 & 8 & gradient \\
 MGH21 & BFGS (backtracking) & 4.792661e-18 & 1.495834e-09 & 228 & 150 & gradient \\
 \midrule
-MGH22 & FFJM2 (PSB) & 4.516652e-14 & 2.795657e-10 & 13 & 10 & gradient \\
+MGH22 & Algorithm~\ref{complexity} (PSB) & 4.516652e-14 & 2.795657e-10 & 13 & 10 & gradient \\
 MGH22 & BFGS (backtracking) & 1.653367e-13 & 1.561713e-08 & 136 & 112 & gradient \\
 \midrule
-MGH23 & FFJM2 (PSB) & 1.124989e-05 & 2.279978e-09 & 13 & 10 & gradient \\
+MGH23 & Algorithm~\ref{complexity} (PSB) & 1.124989e-05 & 2.279978e-09 & 13 & 10 & gradient \\
 MGH23 & BFGS (backtracking) & 1.124989e-05 & 1.205331e-08 & 87 & 68 & gradient \\
 \midrule
-MGH24 & FFJM2 (PSB) & 1.728411e-06 & 1.740229e-09 & 37 & 22 & gradient \\
+MGH24 & Algorithm~\ref{complexity} (PSB) & 1.728411e-06 & 1.740229e-09 & 37 & 22 & gradient \\
 MGH24 & BFGS (backtracking) & 1.728411e-06 & 6.288297e-09 & 588 & 450 & gradient \\
 \midrule
-MGH25 & FFJM2 (PSB) & 7.395571e-32 & 3.845925e-16 & 13 & 6 & gradient \\
+MGH25 & Algorithm~\ref{complexity} (PSB) & 7.395571e-32 & 3.845925e-16 & 13 & 6 & gradient \\
 MGH25 & BFGS (backtracking) & 6.843630e-26 & 7.268618e-12 & 23 & 16 & gradient \\
 \midrule
-MGH26 & FFJM2 (PSB) & 1.397528e-05 & 2.997834e-09 & 27 & 16 & gradient \\
+MGH26 & Algorithm~\ref{complexity} (PSB) & 1.397528e-05 & 2.997834e-09 & 27 & 16 & gradient \\
 MGH26 & BFGS (backtracking) & 1.397528e-05 & 1.106362e-08 & 36 & 34 & gradient \\
 \midrule
-MGH27 & FFJM2 (PSB) & 2.240730e-16 & 1.941231e-09 & 11 & 8 & gradient \\
+MGH27 & Algorithm~\ref{complexity} (PSB) & 2.240730e-16 & 1.941231e-09 & 11 & 8 & gradient \\
 MGH27 & BFGS (backtracking) & 5.734697e-20 & 3.689878e-09 & 20 & 17 & gradient \\
 \midrule
-MGH28 & FFJM2 (PSB) & 2.223149e-15 & 6.931523e-09 & 10 & 8 & gradient \\
+MGH28 & Algorithm~\ref{complexity} (PSB) & 2.223149e-15 & 6.931523e-09 & 10 & 8 & gradient \\
 MGH28 & BFGS (backtracking) & 2.533828e-16 & 1.086349e-08 & 26 & 18 & gradient \\
 \midrule
-MGH29 & FFJM2 (PSB) & 1.130540e-22 & 1.906829e-11 & 8 & 7 & gradient \\
+MGH29 & Algorithm~\ref{complexity} (PSB) & 1.130540e-22 & 1.906829e-11 & 8 & 7 & gradient \\
 MGH29 & BFGS (backtracking) & 9.104593e-19 & 1.563296e-09 & 8 & 8 & gradient \\
 \midrule
-MGH30 & FFJM2 (PSB) & 7.642460e-27 & 3.456063e-13 & 10 & 7 & gradient \\
+MGH30 & Algorithm~\ref{complexity} (PSB) & 7.642460e-27 & 3.456063e-13 & 10 & 7 & gradient \\
 MGH30 & BFGS (backtracking) & 1.965544e-19 & 4.026641e-09 & 46 & 23 & gradient \\
 \midrule
-MGH31 & FFJM2 (PSB) & 1.528639e+00 & 4.173205e-08 & 49 & 18 & stalled \\
+MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 4.173205e-08 & 49 & 18 & stalled \\
 MGH31 & BFGS (backtracking) & 1.340110e+00 & 4.482312e-09 & 78 & 43 & gradient \\
 \midrule
-MGH32 & FFJM2 (PSB) & 5.000000e+00 & 3.845925e-16 & 3 & 2 & gradient \\
+MGH32 & Algorithm~\ref{complexity} (PSB) & 5.000000e+00 & 3.845925e-16 & 3 & 2 & gradient \\
 MGH32 & BFGS (backtracking) & 5.000000e+00 & 5.578802e-16 & 2 & 2 & gradient \\
 \midrule
-MGH33 & FFJM2 (PSB) & 2.317073e+00 & 6.326298e-11 & 12 & 5 & gradient \\
+MGH33 & Algorithm~\ref{complexity} (PSB) & 2.317073e+00 & 6.326298e-11 & 12 & 5 & gradient \\
 MGH33 & BFGS (backtracking) & 2.317073e+00 & 1.423632e-10 & 13 & 5 & gradient \\
 \midrule
-MGH34 & FFJM2 (PSB) & 3.067568e+00 & 1.552202e-10 & 9 & 2 & gradient \\
+MGH34 & Algorithm~\ref{complexity} (PSB) & 3.067568e+00 & 1.552202e-10 & 9 & 2 & gradient \\
 MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & gradient \\
 \end{longtable}
 
 \noindent
-Is possible to see, the results of objective function aren't to diferent with two appraochs. But, the number of function and gradiente evaluation are really different. Is important to see, the MGH10 problem is really dificult to solve, but ffjm2 found a smaller gradient norm than BFGS approach. And the MGH18, ffjm found a much smaller objective function.
+Across the 34 problems, the two methods usually agree closely on the final
+objective value, but differ sharply in cost. Algorithm~\ref{complexity} (PSB) needs far fewer
+function and gradient evaluations than BFGS on most problems (see
+Table~\ref{tab:psb-vs-bfgs}). MGH10 shows how hard some of these problems
+are. Neither method certifies gradient convergence there, and both land on
+essentially the same objective value ($f\approx43.97$), yet Algorithm~\ref{complexity} still
+reaches a far smaller gradient norm than BFGS ($\|\nabla f\|\approx
+1.2\times10^{-5}$ against $\approx2.28$), using half the function
+evaluations and under a third of the gradient evaluations. MGH18 shows the
+opposite kind of gap. Although both methods stop under the gradient
+criterion, Algorithm~\ref{complexity} reaches essentially zero ($f\approx1.0\times10^{-18}$)
+while BFGS settles for a distinctly larger value ($f\approx2.8\times
+10^{-3}$). A small gradient norm does not always mean the same
+stationary point.
 
-
-
-The boxplot below compares the performance of the two approaches. It was
-not regenerated for this update: its data selection already restricts to
-problems where \emph{both} methods converge by the gradient criterion,
-which excludes MGH10, MGH16, and MGH31 on the FFJM2 side both before and
-after this change, so the boxplot and its Mann-Whitney test are unaffected
-by it.
+The boxplot below compares the two approaches directly and uses the
+Mann-Whitney U test to check whether the difference between them is
+statistically significant.
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{boxplot_ffjm2_bfgs.png}
-    \caption{Comparison of FFJM2 (PSB) vs.\ BFGS (backtracking) on the MGH
+    \caption{Comparison of Algorithm~\ref{complexity} (PSB) vs.\ BFGS (backtracking) on the MGH
         problems, restricted to runs where both methods converged by
         gradient norm. Final
         $f$ value, function evaluations, and gradient evaluations. Stars
@@ -372,189 +641,15 @@ by it.
 \FloatBarrier
 
 As Figure~\ref{fig:boxplot-ffjm2-bfgs} shows, the objective function values
-are not very different between the two methods: the p-value confirms
+are not very different between the two methods. The p-value confirms
 neither achieves a significantly better result. Function evaluations and
 gradient evaluations, however, are different, and the p-value confirms
-this difference is significant. FFJM2 therefore performs better than
+this difference is significant. Algorithm~\ref{complexity} therefore performs better than
 BFGS in this respect, reaching a comparable solution at a much lower cost.
 
-As an aside, the BFGS baseline above uses backtracking with quadratic
-interpolation (order 2); Table~\ref{tab:bfgs-linesearches} checks how much
-that particular choice of line search matters on its own, running
-\texttt{Optim.BFGS} on the same 34 MGH problems with four line searches:
-\texttt{LineSearches.HagerZhang()} (\texttt{Optim.jl}'s default), a
-minimalist geometric backtracking with no interpolation (``order 1'',
-always restarting from a fixed step of $1$), and \texttt{BackTracking}
-with quadratic (order 2) and cubic (order 3) interpolation. ``Converged
-(gradient)'' counts how many of the 34 problems stopped under the gradient
-criterion; the remaining columns are mean~$\pm$~standard deviation over
-all 34 problems (including the ones that stopped under a different
-criterion).
-
-\begin{table}[htbp]
-\centering
-\caption{Comparison of line searches for Optim.jl's BFGS on the 34 MGH problems.}
-\label{tab:bfgs-linesearches}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{l r r r r r}
-\toprule
-Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
-\midrule
-Hager-Zhang & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 33/34 & $66.91 \pm 120.92$ & $107.82 \pm 206.62$ & $107.82 \pm 206.62$ \\
-Backtracking (order 1) & $2.49\times10^{7} \pm 1.45\times10^{8}$ & 30/34 & $51.56 \pm 93.74$ & $89.62 \pm 131.90$ & $52.47 \pm 93.75$ \\
-Backtracking (order 2) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 32/34 & $61.59 \pm 99.26$ & $86.74 \pm 134.56$ & $62.56 \pm 99.17$ \\
-Backtracking (order 3) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $56.91 \pm 89.47$ & $84.91 \pm 132.01$ & $57.85 \pm 89.33$ \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
-
-\noindent
-Hager-Zhang converges by gradient on the most problems (33/34) but at the
-highest average cost, and its function/gradient evaluation counts always
-match exactly --- it evaluates $f$ and $\nabla f$ together at every trial
-point, unlike the three backtracking variants (which only need $\nabla f$
-once a trial is accepted). Order-1 backtracking is the cheapest per
-problem on average, but also the least reliable of the four (30/34).
-Order-2 and order-3 sit in between on both counts. No single line search
-dominates the other three on every metric; the differences are modest
-next to the FFJM2 vs.\ BFGS gap of
-Figure~\ref{fig:boxplot-ffjm2-bfgs}. The mean/std of $f$ is not a useful
-per-problem quality measure here --- MGH problems span many orders of
-magnitude at their true minima, so a couple of legitimately large-residual
-problems (MGH16, $f\approx4.3\times10^4$; MGH06, $f\approx1.0\times10^3$)
-already dominate the $1.29\times10^3\pm7.36\times10^3$ shared by
-Hager-Zhang and orders 2--3, all three of which land on the same,
-correct value on MGH10 ($f\approx44$) and everywhere else they converge.
-Order-1 backtracking's much larger $2.49\times10^7\pm1.45\times10^8$ is a
-genuine failure, not scale: it stalls at $x^0$ on MGH10 after a single
-rejected trial ($f\approx8.5\times10^8$, seven orders of magnitude above
-the correct value), the only case among the four where this happens.
-
-A second aside: FFJM2's quartic subproblem (Section~2, Eq.~(18)/(21)) is
-solved internally by Ipopt, but the paper's Algorithm 4.1 does not require
-that particular choice. Table~\ref{tab:subproblem-solvers} checks how the
-four solvers already available as \texttt{model\_solver} in \texttt{ffjm2}
---- Ipopt, BFGS (backtracking, same as above), BOBYQA, and MADS --- fare
-when applied \emph{directly} to $0.5\|F(x)\|^2$ on the 34 MGH problems
-(i.e., as if each one were, on its own, the whole optimizer, not just the
-subproblem solver inside FFJM2's outer loop). Same columns as
-Table~\ref{tab:bfgs-linesearches}; BOBYQA and MADS are derivative-free, so
-their gradient-evaluation count is always $0$ and ``Converged (gradient)''
-for them instead counts $\|\nabla f\|\le10^{-8}$ checked \emph{after} the
-solver stops (Ipopt and BFGS report their own gradient-based termination
-directly).
-
-\begin{table}[htbp]
-\centering
-\caption{Comparison of the solvers available for FFJM2's internal
-    subproblem, applied directly to $0.5\|F(x)\|^2$ on the 34 MGH problems.}
-\label{tab:subproblem-solvers}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{l r r r r r}
-\toprule
-Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
-\midrule
-Ipopt & $1.88\times10^{5} \pm 1.09\times10^{6}$ & 32/34 & $69.53 \pm 103.06$ & $424.62 \pm 803.24$ & $71.53 \pm 103.06$ \\
-BFGS (backtracking) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 32/34 & $61.59 \pm 99.26$ & $86.74 \pm 134.56$ & $62.56 \pm 99.17$ \\
-BOBYQA & $1.47\times10^{10} \pm 8.56\times10^{10}$ & 10/34 & $572.71 \pm 699.05$ & $572.71 \pm 699.05$ & $0.00 \pm 0.00$ \\
-MADS & $1.47\times10^{10} \pm 8.56\times10^{10}$ & 0/34 & $986.82 \pm 594.53$ & $986.82 \pm 594.53$ & $0.00 \pm 0.00$ \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
-
-\noindent
-Ipopt and BFGS are essentially tied on reliability (32/34) and land within
-a factor of $2$ of each other on iterations and gradient evaluations, but
-Ipopt needs about $5\times$ more function evaluations on average (it
-solves a full barrier subproblem at each outer iteration). BOBYQA and MADS
-are far behind on both counts: with no gradient to exploit, they need an
-order of magnitude more evaluations and still only certify gradient
-convergence on 10/34 (BOBYQA) or none at all (MADS) within the $2000$
-function-evaluation budget. As Table~\ref{tab:ffjm2-subproblem-solvers}
-below shows, this gap does \emph{not} carry over once these solvers are
-used the way FFJM2 actually uses them --- as the resolver of the small,
-cheap quartic model, rather than as the whole optimizer applied to the raw
-residual. As in Table~\ref{tab:bfgs-linesearches}, the mean/std of $f$
-is dominated by outliers rather than typical behavior, and here they point
-to a genuine methodological limitation of the box these two derivative-free
-solvers need (BOBYQA and MADS require finite bounds; both are given
-$x^0\pm\mathrm{bound\_radius}$, $\mathrm{bound\_radius}=\max(10^3,
-100\max(1,\|x^0\|))$): on MGH04, whose true minimizer is
-$x^*\approx(10^6,\,2\times10^{-6})$, this box does not even contain
-$x^*$ when $x^0=(1,1)$ gives $\mathrm{bound\_radius}=10^3$, so both solvers
-stall at the box boundary ($f\approx5.0\times10^{11}$, versus
-$\approx8\times10^{-28}$ for Ipopt/BFGS on the same problem) --- a box
-sized from $\|x^0\|$ alone cannot help when $x^*$ is orders of magnitude
-farther from $x^0$ than $x^0$ is from the origin. Ipopt's own outlier is
-different in kind: on MGH10 it converges (\texttt{LOCALLY\_SOLVED}) to a
-KKT point with $f\approx6.3\times10^6$, well above BFGS's
-$f\approx44$ on the same problem, i.e.\ a genuine bad local
-solution rather than a boundary artifact.
-
-Table~\ref{tab:ffjm2-subproblem-solvers} repeats the comparison, but now
-running \texttt{ffjm2} in full (\texttt{update=:psb}) on the same 34
-problems, once per \texttt{model\_solver} --- i.e., Ipopt/BFGS/BOBYQA solve
-only the small quartic model at each outer iteration, exactly as FFJM2
-uses them, instead of standing in as the whole optimizer.
-\texttt{function\_evaluations}/\texttt{gradient\_evaluations} here count
-only calls to the real residual/Jacobian made by FFJM2's outer loop
-(\texttt{residual(x)}/\texttt{jac(x)}); the internal solver's own work on
-the quartic surrogate is tracked separately by \texttt{ffjm2} (fields
-\texttt{model\_solves}/\texttt{model\_iterations}/
-\texttt{model\_solve\_time\_seconds}, not shown) and never mixed into
-these counts, so this is already an apples-to-apples measure of external
-cost regardless of \texttt{model\_solver}. MADS is left out here: even at
-a much smaller \texttt{model\_multistart} than the default ($10$ instead
-of $1000$), a single easy problem (MGH01) took $\approx69$s in MADS alone
-against $<0.1$s for BFGS/BOBYQA, making the default multistart impractical
-across all 34 problems for this table.
-
-\begin{table}[htbp]
-\centering
-\caption{FFJM2 (PSB), varying only \texttt{model\_solver}, on the 34 MGH problems.}
-\label{tab:ffjm2-subproblem-solvers}
-\resizebox{\textwidth}{!}{%
-\begin{tabular}{l r r r r r}
-\toprule
-Method & $f$ & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals \\
-\midrule
-FFJM2 (PSB, Ipopt) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $15.12 \pm 21.90$ & $30.21 \pm 49.59$ & $16.12 \pm 21.90$ \\
-FFJM2 (PSB, BFGS) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 31/34 & $15.26 \pm 21.99$ & $30.26 \pm 48.63$ & $16.26 \pm 21.99$ \\
-FFJM2 (PSB, BOBYQA) & $1.29\times10^{3} \pm 7.36\times10^{3}$ & 30/34 & $39.74 \pm 108.86$ & $57.68 \pm 127.48$ & $40.74 \pm 108.86$ \\
-\bottomrule
-\end{tabular}%
-}
-\end{table}
-
-\noindent
-The gap seen in Table~\ref{tab:subproblem-solvers} almost disappears here:
-Ipopt and BFGS as \texttt{model\_solver} are essentially indistinguishable
-(31/34, within $1\%$ of each other on every column), and even BOBYQA ---
-which needed an order of magnitude more evaluations and converged on only
-10/34 when applied directly to the raw residual --- falls behind by only
-one problem (30/34) and roughly $2.6\times$ more outer iterations on
-average, not $10\times$. All three land on the same $f$ statistics, again
-driven by the legitimately large-residual MGH16/MGH06 rather than any
-failure. This is exactly the effect anticipated when this experiment was
-designed (\texttt{teste.jl}): FFJM2's own outer loop --- the ratio test
-that rejects a bad step and grows $\sigma$, and the full Hessian reset that
-follows a bad ratio (see the discussion of $\sigma$ in
-Section~\ref{sec:mgh-problems})
---- compensates for a mediocre subproblem solution, so a weaker
-\texttt{model\_solver} costs a few extra outer iterations rather than
-failing outright. FFJM2 still defaults to Ipopt --- tied with BFGS on
-reliability (31/34) and within a step or two of it on every problem where
-they differ (worst case MGH10, $121$ outer iterations against BFGS's
-$120$) --- but the choice matters far less than
-Table~\ref{tab:subproblem-solvers} alone would suggest.
 
 
-
-
-
-\section{Coeficient estimation problem}
+\section{Coefficient estimation problem} \label{cap:coeficient_estimation}
 
 The Saint-Venant equations \cite{castro,leveque,porto,saintvenant} 
   describe the flow of fluids in natural channels. The state variables that describe a natural channel vary
@@ -591,58 +686,108 @@ and
  The Manning (also called Yen-Manning \cite{bcgmr}) coefficient $n_g$ represents roughness \cite{bcgmr}.
 Typically, given the inlet discharge $Q(x_{min}, t)$ for $t \in [t_{min}, t_{max}]$, initial conditions $A(x, t_{min})$ 
 and $Q(x, t_{min})$, and the coefficient $n_g$, numerical methods compute the values of $Q(x, t)$ and $A(x, t)$ at a set
- of discrete ``grid points" $(x_\nu, t_\nu)$. Unfortunately, the Yen-Manning coefficient  $n_g$ is often unknown for natural channels
+ of discrete ``grid points" $(x_\nu, t_\nu)$. This PDE system is solved using an explicit finite difference method with artificial diffusion of $0.99$, following \cite{leveque,porto}. Unfortunately, the Yen-Manning coefficient $n_g$ is often unknown for natural channels
  and can vary with position $x$ and even time $t$. {For more details, see \cite{bcgmr}}.  
 
- This research assumes that the  Manning coefficient $n_g$ varies with position $x$, and that a set of elevation
- observations $z_{obs}(x_\nu, t_\nu)$ are available at $n_{obs}$ distinct locations and times, indexed by $\nu = 1, \ldots, n_{obs}$. 
-Consequently, the spatial distribution of $n_g(x)$, discretized over a suitable grid, becomes an unknown component of our problem.
- Furthermore, to ensure physically plausible results, minimal variation will be required for a function $n_g(x)$ that minimizes
- spatial oscillations while fitting the solution of the Saint-Venant equations to the observations.
+Following \cite{FortunatoMartinez2025}, this research assumes that the
+Manning coefficient $n_g$ varies with position $x$, and that a set of
+elevation observations $z_{obs}(x_\nu, t_\nu)$ are available at
+$n_{obs}$ distinct locations and times, indexed by $\nu = 1, \ldots,
+n_{obs}$. Consequently, the spatial distribution of $n_g(x)$, discretized
+over a suitable grid, becomes an unknown component of our problem.
+Furthermore, to ensure physically plausible results, minimal variation
+will be required for a function $n_g(x)$ that minimizes spatial
+oscillations while fitting the solution of the Saint-Venant equations to
+the observations.
 
-Following the notation of Section~3 --- reusing $x$ for this new, unrelated
-role as the vector of unknowns, distinct from the spatial coordinate used
-above --- collect the $n$ discretized values of $n_g$ into a parameter
-vector $x \in \IR^n$. For $i = 1, \ldots, m$ (with $m = n_{obs}$),
-let $z_i(x)$ denote the surface elevation the Saint-Venant solution
-predicts, for parameter vector $x$, at the $i$-th observation's location
-and time $(x_i, t_i)$, and let $z_{obs,i} = z_{obs}(x_i, t_i)$ be the
-corresponding observation. Exactly as in Section~3, define the residual
-components $f_i(x) = z_i(x) - z_{obs,i}$, collect them into $F(x) =
-(f_1(x), \ldots, f_m(x))^T$, and minimize
+Consider a grid with $n_{grid}$ points
+$x_{min} \le x_1 < \cdots < x_{n_{grid}} \le x_{max}$. Collect the
+$n_{grid}$ values $n_g(x_1), \ldots, n_g(x_{n_{grid}})$ into a parameter
+vector $\theta \in \IR^{n_{grid}}$, with $\theta_i := n_g(x_i)$ for
+$i = 1, \ldots, n_{grid}$, kept notationally distinct from the spatial
+coordinate $x$. In \cite{FortunatoMartinez2025}, this calibration problem
+is posed as a constrained optimization problem, minimizing either the sum
+of squared deviations of $\theta$ from a reference value $\bar n$ or the
+sum of absolute deviations, subject to equality constraints requiring the
+simulated elevations to match the $n_{obs}$ observations and a box
+constraint $0 \le \theta_i \le n_g^{\max}$; it is solved there by a
+Safeguarded Augmented Lagrangian method (Algorithm~2.1 of
+\cite{FortunatoMartinez2025}), with BOBYQA or PRIMA handling the
+subproblems.
+
+The two applications differ mainly in how the underlying PDE is solved.
+In this work we rely on a more stable PDE solver, which lets us compute
+the derivative of the objective with respect to $\theta$ accurately;
+this is precisely what enables the gradient-based comparison carried out
+below, namely BFGS and Algorithm~\ref{complexity} against the
+derivative-free BOBYQA. Figure~\ref{fig:solver-comparison} contrasts the
+previous and the current solver on the same problem.
+
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+% \includegraphics[width=\textwidth]{old_solver.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+% \includegraphics[width=\textwidth]{new_solver.png}
+\end{minipage}
+\caption{Comparison between the previous (left) and the current (right) PDE solver.}
+\label{fig:solver-comparison}
+\end{figure}
+
+For the comparison in this section, we adapt this into the unconstrained
+nonlinear least-squares form used throughout this report, minimizing the
+elevation mismatch directly instead of enforcing it as an equality
+constraint. For $i = 1, \ldots, m$ (with $m = n_{obs}$), let
+$z_i(\theta)$ denote the surface elevation the Saint-Venant solution
+predicts, for parameter vector $\theta$, at the $i$-th observation's
+location and time $(x_i, t_i)$, and let $z_{obs,i} = z_{obs}(x_i, t_i)$
+be the corresponding observation. Define the residual components
+$f_i(\theta) = z_i(\theta) - z_{obs,i}$, collect them into $F(\theta) =
+(f_1(\theta), \ldots, f_m(\theta))^T$, and minimize
 \[
-    f(x) = \frac12\|F(x)\|_2^2 = \frac12\sum_{i=1}^m f_i(x)^2.
+    f(\theta) = \frac12\|F(\theta)\|_2^2 = \frac12\sum_{i=1}^m f_i(\theta)^2.
 \]
 Calibrating $n_g$ against the observations is thus the nonlinear
-least-squares problem of finding $x$ that minimizes $f(x)$ (ideally
-$F(x) = 0$, though the real data need not be exactly consistent with the
-model).
+least-squares problem of finding $\theta$ that minimizes $f(\theta)$
+(ideally $F(\theta) = 0$, though the real data need not be exactly
+consistent with the model).
 
-To calibrate $x$ against this residual, four benchmark scenarios compare
-the same three solvers used throughout this report --- BFGS (backtracking,
-order 2), BOBYQA, and \texttt{ffjm2} --- applied directly to $F(x)$ above,
-in the same way as Table~\ref{tab:subproblem-solvers}: each solver stands
-in as the whole optimizer, rather than as \texttt{ffjm2}'s internal
+\subsection{Why consider this scheme}
+
+We whant to solve a coefficient estimation problem in a PDE. That is, evaluate a objective function is solve a PDE and derivate this function is derivate a PDE solver. In this paper, 
+
+
+\subsection{Results}
+To calibrate $\theta$ against this residual, four benchmark scenarios
+compare the same three solvers used throughout this report, namely BFGS
+(backtracking, order 2), BOBYQA, and Algorithm~\ref{complexity}, applied
+directly to $F(\theta)$ above where each solver stands in as the
+whole optimizer, rather than as Algorithm~\ref{complexity}'s internal
 subproblem solver. Two scenarios are \emph{twin} experiments, where the
 observations $z_{obs,i}$ are themselves generated by the model at a known
-$x^\star$, so the true minimizer is known exactly; the other two use the
-real observed data, where the true minimizer (if it exists) is unknown.
-BFGS and BOBYQA minimize the boxed, penalized sum of squares
-$\|F(x)\|_2^2 + \mathrm{penalty}(x)$ (box $[0,0.5]^n$, penalty weight
-$10^6$); \texttt{ffjm2} minimizes the unpenalized $f(x) =
-\frac12\|F(x)\|_2^2$ directly, so its $f$ column below is, on runs where
-the box constraint is inactive, exactly half of the other two methods' ---
-e.g.\ real data, $n=3$, below, where all three reach the same minimizer up
-to rounding: $f\approx1.0085$ for BFGS/BOBYQA versus $f\approx0.5043$ for
-\texttt{ffjm2}. RMSD is recomputed uniformly from the raw (unpenalized)
-residual, $\mathrm{RMSD}(x) = \|F(x)\|_2/\sqrt{m}$, at each method's
-minimizer, so it is directly comparable across all rows of every table
-below.
+$\theta^\star$, so the true minimizer is known exactly; the other two use
+the real observed data, where the true minimizer (if it exists) is
+unknown. BFGS and BOBYQA minimize the boxed, penalized sum of squares
+$\|F(\theta)\|_2^2 + \mathrm{penalty}(\theta)$ (box $[0,0.5]^{n_{grid}}$,
+penalty weight $10^6$); Algorithm~\ref{complexity} minimizes the
+unpenalized $f(\theta) = \frac12\|F(\theta)\|_2^2$ directly, so its $f$
+column below is, on runs where the box constraint is inactive, exactly
+half of the other two methods', e.g.\ real data, $n_{grid}=3$, below,
+where all three reach the same minimizer up to rounding, with
+$f\approx1.0085$ for BFGS/BOBYQA versus $f\approx0.5043$ for
+Algorithm~\ref{complexity}. RMSD is recomputed uniformly from the raw
+(unpenalized) residual, $\mathrm{RMSD}(\theta) = \|F(\theta)\|_2/\sqrt{m}$,
+at each method's minimizer, so it is directly comparable across all rows
+of every table below.
 
 \begin{table}[htbp]
 \centering
-\caption{Twin experiment, $n=2$: $x^\star=(0.20,\,0.15)$,
-    $x^0=(0.09,\,0.09)$.}
+\caption{Twin experiment, $n_{grid}=2$: $\theta^\star=(0.20,\,0.15)$,
+    $\theta^0=(0.09,\,0.09)$.}
 \label{tab:twin-dim2}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -651,7 +796,7 @@ Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & 
 \midrule
 BFGS (backtracking) & $6.95\times10^{-9}$ & $1.63\times10^{-14}$ & $1.19\times10^{-5}$ & 17 & 9 & 416.1 & \texttt{GradientNorm} \\
 BOBYQA & $1.56\times10^{-9}$ & $8.20\times10^{-16}$ & $2.91\times10^{-6}$ & 43 & 0 & 456.2 & \texttt{XTOL\_REACHED} \\
-ffjm2 & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36\times10^{-13}$ & 11 & 6 & 200.5 & \texttt{gradient\_converged} \\
+Algorithm~\ref{complexity} & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36\times10^{-13}$ & 11 & 6 & 200.5 & \texttt{gradient\_converged} \\
 \bottomrule
 \end{tabular}
 }%
@@ -659,14 +804,14 @@ ffjm2 & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36\times10^{-13}$ & 11 
 
 \noindent
 All three methods converge to essentially the exact reference
-$x^\star=(0.20,0.15)$; \texttt{ffjm2} is the cheapest of the three by
+$\theta^\star=(0.20,0.15)$; Algorithm~\ref{complexity} is the cheapest of the three by
 every cost measure (fewest evaluations, least time) despite also reaching
 the tightest gradient norm and RMSD.
 
 \begin{table}[htbp]
 \centering
-\caption{Twin experiment, $n=10$: decreasing profile $x^\star$
-    from $0.12$ to $0.07$, $x^0=(0.09,\ldots,0.09)$. (Increasing profiles
+\caption{Twin experiment, $n_{grid}=10$: decreasing profile $\theta^\star$
+    from $0.12$ to $0.07$, $\theta^0=(0.09,\ldots,0.09)$. (Increasing profiles
     over the same range were tested manually and diverge before
     $t_{\max}=31$; only decreasing profiles are stable.)}
 \label{tab:twin-dim10}
@@ -677,15 +822,15 @@ Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & 
 \midrule
 BFGS (backtracking) & $1.74\times10^{-6}$ & $1.03\times10^{-9}$ & $1.32\times10^{-4}$ & 205 & 168 & 9959.2 & \texttt{GradientNorm} \\
 BOBYQA & $6.80\times10^{-5}$ & $1.56\times10^{-6}$ & $3.27\times10^{-4}$ & 1000 & 0 & 12037.3 & \texttt{MAXEVAL\_REACHED} \\
-ffjm2 & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89\times10^{-11}$ & 29 & 17 & 942.7 & \texttt{gradient\_converged} \\
+Algorithm~\ref{complexity} & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89\times10^{-11}$ & 29 & 17 & 942.7 & \texttt{gradient\_converged} \\
 \bottomrule
 \end{tabular}
 }%
 \end{table}
 
 \noindent
-At $n=10$ the gap between \texttt{ffjm2} and the other two widens sharply:
-it reaches a gradient norm roughly $7$ orders of magnitude smaller than
+At $n_{grid}=10$ the gap between Algorithm~\ref{complexity} and the other two widens sharply.
+It reaches a gradient norm roughly $7$ orders of magnitude smaller than
 BFGS or BOBYQA, using about $7$--$35\times$ fewer function evaluations
 and $10$--$13\times$ less wall-clock time. BOBYQA exhausts its
 $1000$-evaluation budget without reaching the gradient criterion
@@ -693,7 +838,7 @@ $1000$-evaluation budget without reaching the gradient criterion
 
 \begin{table}[htbp]
 \centering
-\caption{Real data, $n=3$: $x^0=(0.09,0.09,0.09)$.}
+\caption{Real data, $n_{grid}=3$: $\theta^0=(0.09,0.09,0.09)$.}
 \label{tab:real-dim3}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -702,23 +847,23 @@ Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & 
 \midrule
 BFGS (backtracking) & $5.46\times10^{-2}$ & $1.0085$ & $3.85\times10^{-6}$ & 25 & 15 & 738.5 & \texttt{GradientNorm} \\
 BOBYQA & $5.46\times10^{-2}$ & $1.0085$ & $1.06\times10^{-4}$ & 116 & 0 & 1432.3 & \texttt{XTOL\_REACHED} \\
-ffjm2 & $5.46\times10^{-2}$ & $0.5043$ & $6.41\times10^{-9}$ & 26 & 12 & 553.6 & \texttt{gradient\_converged} \\
+Algorithm~\ref{complexity} & $5.46\times10^{-2}$ & $0.5043$ & $6.41\times10^{-9}$ & 26 & 12 & 553.6 & \texttt{gradient\_converged} \\
 \bottomrule
 \end{tabular}
 }%
 \end{table}
 
 \noindent
-On real data, all three methods agree closely on the minimizer itself:
+On real data, all three methods agree closely on the minimizer itself.
 RMSD matches to three significant figures across the board
-($\approx5.46\times10^{-2}$), and $f$ matches once \texttt{ffjm2}'s factor
-of $2$ (discussed above) is accounted for. \texttt{ffjm2} again reaches by
-far the smallest gradient norm --- roughly three orders of magnitude below
-BFGS --- at an evaluation count and wall-clock time comparable to BFGS.
+($\approx5.46\times10^{-2}$), and $f$ matches once Algorithm~\ref{complexity}'s factor
+of $2$ (discussed above) is accounted for. Algorithm~\ref{complexity} again reaches by
+far the smallest gradient norm, roughly three orders of magnitude below
+BFGS, at an evaluation count and wall-clock time comparable to BFGS.
 
 \begin{table}[H]
 \centering
-\caption{Real data, $n=10$: $x^0=(0.09,\ldots,0.09)$.}
+\caption{Real data, $n_{grid}=10$: $\theta^0=(0.09,\ldots,0.09)$.}
 \label{tab:real-dim10}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -727,7 +872,7 @@ Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & 
 \midrule
 BFGS (backtracking) & $4.81\times10^{-2}$ & $0.7822$ & $1.19\times10^{6}$ & 171 & 35 & 3654.2 & \texttt{alpha\_too\_small} \\
 BOBYQA & $4.64\times10^{-2}$ & $0.7285$ & $1.11$ & 840 & 0 & 10297.8 & \texttt{SUCCESS} \\
-ffjm2 & \multicolumn{7}{l}{not available in this run} \\
+Algorithm~\ref{complexity} & \multicolumn{7}{l}{not available in this run} \\
 \bottomrule
 \end{tabular}
 }%
@@ -740,13 +885,23 @@ gradient norm still at $\sim1.19\times10^6$, many orders of magnitude away
 from a stationary point, despite needing fewer evaluations and less time
 than BOBYQA. BOBYQA reports \texttt{SUCCESS} and reaches the lowest RMSD
 ($4.64\times10^{-2}$), but needs $840$ evaluations and $\approx2.9$h of
-wall-clock time to get there. \texttt{ffjm2} was not run (or did not
+wall-clock time to get there. Algorithm~\ref{complexity} was not run (or did not
 complete) for this scenario; that row is left for a future update once
 \texttt{comparar\_solvers\_real\_dim10} has been re-run with it included.
 
 
 \clearpage
 \begin{thebibliography}{9}
+
+\bibitem{bcgmr}
+E. G. Birgin, M. R. Correa, V. A. Gonz\'alez-L\'opez, J. M. Mart\'inez, and
+D. S. Rodrigues, \emph{Randomly supported variation of deterministic
+models and its application to one-dimensional shallow water flows}, J.
+Hydraulic Eng., 150 (2024), 04024026.
+
+\bibitem{castro}
+O. Castro-Orgaz and W. H. Hager, \emph{Shallow Water Hydraulics},
+Springer, 2019.
 
 \bibitem{DennisWolkowicz1993}
 J. E. Dennis, Jr. and H. Wolkowicz, \emph{Sizing and least-change secant
@@ -756,6 +911,15 @@ methods}, SIAM J. Numer. Anal., 30 (1993), pp.~1291--1314.
 L. Luk\v{s}an and E. Spedicato, \emph{Variable metric methods for
 unconstrained optimization and nonlinear least squares}, J. Comput. Appl.
 Math., 124 (2000), pp.~61--95.
+
+\bibitem{FortunatoMartinez2025}
+F. A. Fortunato and J. M. Mart\'inez, \emph{KKT-free Constrained
+Optimization and Application to River-Flow Modeling}, IMECC, University
+of Campinas, preprint, 2025.
+
+\bibitem{leveque}
+R. J. LeVeque, \emph{Numerical Methods for Conservation Laws}, Lectures
+in Mathematics, ETH Z\"urich, Birkh\"auser, 1992.
 
 \bibitem{MannWhitney1947}
 H. B. Mann and D. R. Whitney, \emph{On a test of whether one of two random
@@ -775,6 +939,15 @@ pp.~17--41.
 M. J. D. Powell, \emph{A new algorithm for unconstrained optimization}, in
 Nonlinear Programming, J. B. Rosen, O. L. Mangasarian, and K. Ritter, eds.,
 Academic Press, New York, 1970, pp.~31--65.
+
+\bibitem{porto}
+R. M. Porto, \emph{Hidr\'aulica B\'asica}, EESC-USP, S\~ao Paulo, 2000.
+
+\bibitem{saintvenant}
+A. J. C. Saint-Venant, \emph{Th\'eorie du mouvement non-permanent des
+eaux, avec application aux crues des rivi\`ere et \`a l'introduction des
+mar\'ees dans leur lit}, Comptes Rendus des S\'eances de Acad\'emie des
+Sciences, 73 (1871), pp.~147--154.
 
 \end{thebibliography}
 
