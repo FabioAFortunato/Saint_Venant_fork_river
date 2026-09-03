@@ -200,6 +200,7 @@ good solver and Hessian approximation. In the second part, we solve a
 hydraulic problem in which we need to estimate a coefficient of a PDE
 called the Saint-Venant equation.
 
+
 \subsection{Algorithm~\ref{complexity} for MGH problems}
 \label{sec:mgh-problems}
 
@@ -808,6 +809,67 @@ is an additive box term (bounds $[0,0.5]^{n_{grid}}$, weight $10^6$) that
 evaluates to exactly $0$ whenever every coordinate of $\theta$ is feasible,
 as is the case at every minimizer reported below; Algorithm~\ref{complexity}
 minimizes $f(\theta) = \frac12\|F(\theta)\|_2^2$ directly. We consider a box ther for the BFGS and BOBYQA methods to help the convergence of solver. 
+
+\subsubsection{Algorithmic settings}
+
+Because each residual evaluation is a full transient simulation of the
+Saint-Venant equations, all runs below share the same evaluation budget:
+BFGS and BOBYQA were allowed at most 1000 evaluations of the residual,
+and Algorithm~\ref{complexity} at most 500 outer iterations (each
+costing at least one residual evaluation, more on any rejected
+$\sigma$-step). The Status column in Tables~\ref{tab:twin-dim2},
+\ref{tab:twin-dim10}, \ref{tab:real-dim3}, and \ref{tab:real-dim10}
+below reports each solver's own termination code directly, for instance
+\texttt{GradientNorm} or \texttt{SUCCESS} for a genuine
+stopping-criterion match, \texttt{alpha\_too\_small} for a stalled line
+search, or \texttt{maximum\_iterations}/\texttt{XTOL\_REACHED} for a
+budget exhausted without one.
+
+All three solvers are implemented in Julia, version 1.10, and every
+experiment reported in this section was run on a computer with a
+5.2~GHz 12th Gen Intel(R) Core(TM) i9-12900K processor and 16~GB of
+3200~MHz DDR4 RAM, running Linux Mint 21.1.
+
+\begin{itemize}
+    \item \textbf{BFGS}: the \texttt{BFGS} method from the
+    \texttt{Optim.jl} package (version 2.0), together with the order-2
+    backtracking line search from the \texttt{LineSearches.jl} package
+    (version 7.7), the same combination used in
+    Section~\ref{sec:mgh-problems}; gradients are obtained by
+    forward-mode automatic differentiation with the
+    \texttt{ForwardDiff.jl} package (version 1.3), as discussed above.
+    \item \textbf{BOBYQA}: the implementation provided by the
+    \texttt{NLopt.jl} package (version 1.2).
+    \item \textbf{Algorithm~\ref{complexity}}: our own Julia
+    implementation, like the Saint-Venant solver itself.
+\end{itemize}
+
+As stated above, BFGS and BOBYQA are given the box
+$\theta_i \in [0, 0.5]$ for every $i=1,\ldots,n_{grid}$, enforced through
+the additive penalty of weight $10^6$; Algorithm~\ref{complexity}
+minimizes $f(\theta)$ unconstrained, since its own regularization already
+keeps the iterates well-behaved. Other algorithmic parameters differ per
+solver:
+
+\begin{enumerate}
+    \item \textbf{BOBYQA}: the trust region starts with radius $0.01$
+    and the search stops once it has shrunk to $10^{-6}$; the number of
+    interpolation points and other internal settings are left at the
+    package's own defaults.
+    \item \textbf{BFGS (backtracking)}: a run is considered converged
+    once the gradient norm falls below $10^{-3}$; the line search gives
+    up, reporting \texttt{alpha\_too\_small}, once its step length
+    shrinks below $10^{-12}$; and the number of gradient evaluations is
+    capped at 500.
+    \item \textbf{Algorithm~\ref{complexity}}: the same regularization
+    schedule described in Section~\ref{sec:mgh-problems} is used here,
+    starting at $\sigma_0=1$ and growing by a factor of
+    $\sigma_{grow}=10$ on every rejected step, with a floor of
+    $\sigma_{\min}=10^{-8}$ and a ceiling of $\sigma_{\max}=10^{12}$
+    kept purely for numerical stability, together with the same
+    gradient-norm convergence tolerance of $10^{-3}$ used for BFGS
+    above.
+\end{enumerate}
 
 \begin{table}[htbp]
 \centering
