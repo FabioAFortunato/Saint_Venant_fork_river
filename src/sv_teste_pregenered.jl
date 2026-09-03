@@ -545,7 +545,7 @@ function bfgs_puro_penalizado_pregerado(
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
         latest_x[] = copy(x)
         latest_residual[] = residual
-        return (isfinite(value)) ? value : oftype(value, Inf)
+        return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
     end
 
     config = ForwardDiff.GradientConfig(pen_objective, x, ForwardDiff.Chunk{dim}())
@@ -700,7 +700,7 @@ function bobyqa_puro_penalizado_pregerado(
         value = pen_objective(x)
         function_evaluations[] += 1
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
-        return (isfinite(value)) ? value : oftype(value, Inf)
+        return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
     end
 
     optimizer = NLopt.Opt(:LN_BOBYQA, dim)
@@ -814,7 +814,7 @@ function mads_puro_penalizado_pregerado(
         value = pen_objective(x)
         function_evaluations[] += 1
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
-        return (isfinite(value)) ? value : oftype(value, Inf)
+        return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
     end
 
     objective_mads = function (x)
@@ -943,7 +943,7 @@ function sidpsm_puro_penalizado_pregerado(
         value = pen_objective(x)
         function_evaluations[] += 1
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
-        return (isfinite(value)) ? value : oftype(value, Inf)
+        return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
     end
 
     problem = SidPsm.Problem(x, 0, 0, lb, ub; func_f = objective)
@@ -1125,6 +1125,7 @@ function comparar_solvers_pregerado(
     output = normpath(joinpath(
         @__DIR__, "..", "results", "comparacao_solvers_pregerado_dim$(length(x0)).csv",
     )),
+    points_output = nothing,
     penalty_weight::Real = 1e6,
     lower::AbstractVector = zeros(length(x0)),
     upper::AbstractVector = fill(0.5, length(x0)),
@@ -1143,23 +1144,38 @@ function comparar_solvers_pregerado(
     raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
 
     solver_runs = (
-        ("BFGS", () -> bfgs_puro_penalizado_pregerado(
-            x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit, g_tol,
-            penalty_weight, lower, upper, show_trace,
-        )),
+        ("BFGS", function ()
+            r = bfgs_puro_penalizado_pregerado(
+                x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit, g_tol,
+                penalty_weight, lower, upper, show_trace,
+            )
+            accepted_points = [
+                state.metadata["x"]
+                for state in Optim.trace(r.solution) if haskey(state.metadata, "x")
+            ]
+            return (; r.minimizer, r.minimum, r.execution_time_seconds,
+                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
+                    accepted_points)
+        end),
         # ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
         #     x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
         # )),
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
-            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace, ffjm2_options...)
+            accepted_points = Vector{Vector{Float64}}()
+            track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
+            r = ffjm2(
+                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                callback = track_accepted, ffjm2_options...,
+            )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
-                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status)
+                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
+                    accepted_points)
         end),
     )
 
-    return _comparar_solvers(raw_residual, dim, output, solver_runs)
+    return _comparar_solvers(raw_residual, dim, output, solver_runs; points_output)
 end
 
 """
@@ -1353,11 +1369,12 @@ function comparar_solvers_twin_dim2(;
     ffjm2_maxiter::Integer = 500,
     show_trace::Bool = false,
     output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim2.csv")),
+    points_output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim2_pontos.csv")),
     kwargs...,
 )
     return comparar_solvers_pregerado(
         x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
-        ffjm2_maxiter, show_trace, output, kwargs...,
+        ffjm2_maxiter, show_trace, output, points_output, kwargs...,
     )
 end
 

@@ -513,7 +513,7 @@ function sv_objective_from_residual(
     upper::AbstractVector = fill(0.5, length(x)),
 )
     value = sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)
-    return (isfinite(value)) ? value : oftype(value, Inf)
+    return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
 end
 
 """

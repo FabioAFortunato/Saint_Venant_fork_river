@@ -32,7 +32,6 @@
 \begin{document}
 \maketitle
 
-
 \section{The degeneracy at $k=0$}
 
 Algorithm~\ref{complexity} minimizes $f(x) = \tfrac12\norm{F(x)}^2$, where
@@ -136,6 +135,55 @@ only shrunk, never reset, between outer iterations, an unusually large
 $\sigma_0$, forced whenever the true first step happens to be small,
 persists into $\sigma_1$ and can over-dampen the next iteration's
 subproblem as well.
+
+
+
+
+\subsection{Why consider this scheme}
+
+Solving a coefficient-estimation problem for a PDE is expensive.
+Evaluating the objective function requires solving the PDE once, and
+differentiating that objective requires differentiating the PDE solver
+itself. In \cite{FortunatoMartinez2025} we solved this problem without
+derivatives, but the resulting computational cost was prohibitively high.
+In this work we instead use derivatives obtained by automatic
+differentiation.
+
+This approach computes an exact derivative of the PDE solver, rather than
+a finite-difference approximation, via forward-mode automatic
+differentiation, using Julia's \texttt{ForwardDiff.jl}. We chose forward
+mode over reverse (backward) mode because reverse-mode differentiation
+must first record every elementary operation performed by the solver onto
+a computational tape before it can evaluate the derivative, and since the
+PDE solver performs a very large number of operations, this tape would
+require a prohibitive amount of memory, on the order of 3~gigabytes for a
+single derivative evaluation in our setting.
+
+Using as much derivative information as possible is valuable in
+principle, but Figure~\ref{fig:tempo_derivada} shows why this is
+impractical here. The cost of computing the exact Hessian by automatic
+differentiation grows far faster with the problem dimension than the cost
+of the gradient, so exact second-order information should be avoided,
+relying instead on first-order (gradient) information alone.
+
+
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.8\linewidth]{forwarddiff_sv_f.pdf}
+	\caption{Cost, in equivalent evaluations of $f$, of computing the gradient and the Hessian of the PDE solver's objective by automatic differentiation, as a function of the problem dimension.}
+	\label{fig:tempo_derivada}
+\end{figure}
+\FloatBarrier
+
+At dimension 100, Figure~\ref{fig:tempo_derivada} shows that a single gradient evaluation already costs about as much as 25 evaluations of $f$, while a single Hessian evaluation costs more than 6400 evaluations of $f$.
+
+For this reason, we need to make full use of the information already available to us, particularly the gradient, in order to solve this problem efficiently.
+
+
+
+
+
 
 
 \section{Computational tests}
@@ -739,44 +787,8 @@ least-squares problem of finding $\theta$ that minimizes $f(\theta)$
 (ideally $F(\theta) = 0$, though the real data need not be exactly
 consistent with the model).
 
-\subsection{Why consider this scheme}
-
-Solving a coefficient-estimation problem for a PDE is expensive.
-Evaluating the objective function requires solving the PDE once, and
-differentiating that objective requires differentiating the PDE solver
-itself. In \cite{FortunatoMartinez2025} we solved this problem without
-derivatives, but the resulting computational cost was prohibitively high.
-In this work we instead use derivatives obtained by automatic
-differentiation.
-
-This approach computes an exact derivative of the PDE solver, rather than
-a finite-difference approximation, via forward-mode automatic
-differentiation, using Julia's \texttt{ForwardDiff.jl}. We chose forward
-mode over reverse (backward) mode because reverse-mode differentiation
-must first record every elementary operation performed by the solver onto
-a computational tape before it can evaluate the derivative, and since the
-PDE solver performs a very large number of operations, this tape would
-require a prohibitive amount of memory, on the order of 3~gigabytes for a
-single derivative evaluation in our setting.
-
-Using as much derivative information as possible is valuable in
-principle, but Figure~\ref{fig:tempo_derivada} shows why this is
-impractical here. The cost of computing the exact Hessian by automatic
-differentiation grows far faster with the problem dimension than the cost
-of the gradient, so exact second-order information should be avoided,
-relying instead on first-order (gradient) information alone.
 
 
-
-\begin{figure}[H]
-	\centering
-	\includegraphics[width=0.8\linewidth]{forwarddiff_sv_f.pdf}
-	\caption{Cost, in equivalent evaluations of $f$, of computing the gradient and the Hessian of the PDE solver's objective by automatic differentiation, as a function of the problem dimension.}
-	\label{fig:tempo_derivada}
-\end{figure}
-\FloatBarrier
-
-At dimension 100, Figure~\ref{fig:tempo_derivada} shows that a single gradient evaluation already costs about as much as 25 evaluations of $f$, while a single Hessian evaluation costs more than 6400 evaluations of $f$.
 
 
 
