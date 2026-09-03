@@ -232,23 +232,6 @@ $y_i = \nabla f_i(x_{k+1}) - \nabla f_i(x_k)$:
         + (s^T y_i)\, w_i w_i^T, \qquad
         w_i = \frac{y_i}{s^T y_i} - \frac{H_i s}{s^T H_i s}.
     \]
-    \item \textbf{IS+BFGS} (interval-scaled BFGS \cite{LuksanSpedicato2000}):
-    BFGS with an extra self-scaling factor $\tau$ applied to the outdated
-    part of $H_i$ before the update,
-    \[
-        H_i \leftarrow \tau\left(H_i - \frac{H_i s\,s^T H_i}{s^T H_i s}\right)
-        + \frac{y_i y_i^T}{s^T y_i}, \qquad
-        \tau = \begin{cases} 1/\gamma & \text{if } \bar\gamma^{-1} \le \gamma \le \bar\gamma \\
-        1 & \text{otherwise,} \end{cases} \qquad
-        \gamma = \frac{s^T H_i s}{s^T y_i},
-    \]
-    with $\bar\gamma = 10$ (the default \texttt{gamma\_bar}).
-    \item \textbf{IS+DW} (interval-scaled DW \cite{LuksanSpedicato2000}): the
-    same interval scaling $\tau$ applied inside the DW update above,
-    \[
-        H_i \leftarrow \tau\left(H_i - \frac{H_i s\,s^T H_i}{s^T H_i s}\right)
-        + \frac{y_i y_i^T}{s^T y_i} + (s^T y_i)\, w_i w_i^T.
-    \]
     \item \textbf{PSB} (Powell-Symmetric-Broyden \cite{Powell1970}): a
     rank-two update that does not preserve positive definiteness (like
     SR1),
@@ -268,9 +251,7 @@ Model & Converged (gradient) & Iterations & Func.\ evals & Grad.\ evals & Time (
 \midrule
 BFGS & 29/34 & $56.88 \pm 188.25$ & $99.97 \pm 351.85$ & $57.88 \pm 188.25$ & $2.071 \pm 6.121$ \\
 SR1 & 32/34 & $23.12 \pm 54.84$ & $44.32 \pm 112.92$ & $24.12 \pm 54.84$ & $0.934 \pm 2.992$ \\
-IS+BFGS & 29/34 & $44.00 \pm 170.39$ & $88.15 \pm 343.34$ & $45.00 \pm 170.39$ & $1.590 \pm 5.763$ \\
 DW & 29/34 & $56.12 \pm 181.91$ & $103.24 \pm 351.45$ & $57.12 \pm 181.91$ & $1.865 \pm 5.942$ \\
-IS+DW & 29/34 & $49.41 \pm 173.04$ & $93.74 \pm 344.17$ & $50.41 \pm 173.04$ & $1.768 \pm 5.923$ \\
 PSB & 31/34 & $15.68 \pm 22.53$ & $31.38 \pm 53.44$ & $16.68 \pm 22.53$ & $0.424 \pm 0.919$ \\
 \bottomrule
 \end{tabular}
@@ -363,7 +344,7 @@ all 34 problems in this table.
 		\end{tabular}%
 	}
 \end{table}
-\newpage
+\FloatBarrier
 
 \noindent
 Newton and BFGS are essentially indistinguishable
@@ -604,6 +585,7 @@ MGH33 & BFGS (backtracking) & 2.317073e+00 & 1.423632e-10 & 13 & 5 & gradient \\
 MGH34 & Algorithm~\ref{complexity} (PSB) & 3.067568e+00 & 1.552202e-10 & 9 & 2 & gradient \\
 MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & gradient \\
 \end{longtable}
+\FloatBarrier
 
 \noindent
 Across the 34 problems, the two methods usually agree closely on the final
@@ -727,16 +709,17 @@ previous and the current solver on the same problem.
 \centering
 \begin{minipage}{0.48\textwidth}
 \centering
-% \includegraphics[width=\textwidth]{old_solver.png}
+ \includegraphics[width=\textwidth]{nivel_velho.png}
 \end{minipage}
 \hfill
 \begin{minipage}{0.48\textwidth}
 \centering
-% \includegraphics[width=\textwidth]{new_solver.png}
+ \includegraphics[width=\textwidth]{nive_novo.pdf}
 \end{minipage}
 \caption{Comparison between the previous (left) and the current (right) PDE solver.}
 \label{fig:solver-comparison}
 \end{figure}
+\FloatBarrier
 
 For the comparison in this section, we adapt this into the unconstrained
 nonlinear least-squares form used throughout this report, minimizing the
@@ -758,31 +741,61 @@ consistent with the model).
 
 \subsection{Why consider this scheme}
 
-We whant to solve a coefficient estimation problem in a PDE. That is, evaluate a objective function is solve a PDE and derivate this function is derivate a PDE solver. In this paper, 
+Solving a coefficient-estimation problem for a PDE is expensive.
+Evaluating the objective function requires solving the PDE once, and
+differentiating that objective requires differentiating the PDE solver
+itself. In \cite{FortunatoMartinez2025} we solved this problem without
+derivatives, but the resulting computational cost was prohibitively high.
+In this work we instead use derivatives obtained by automatic
+differentiation.
+
+This approach computes an exact derivative of the PDE solver, rather than
+a finite-difference approximation, via forward-mode automatic
+differentiation, using Julia's \texttt{ForwardDiff.jl}. We chose forward
+mode over reverse (backward) mode because reverse-mode differentiation
+must first record every elementary operation performed by the solver onto
+a computational tape before it can evaluate the derivative, and since the
+PDE solver performs a very large number of operations, this tape would
+require a prohibitive amount of memory, on the order of 3~gigabytes for a
+single derivative evaluation in our setting.
+
+Using as much derivative information as possible is valuable in
+principle, but Figure~\ref{fig:tempo_derivada} shows why this is
+impractical here. The cost of computing the exact Hessian by automatic
+differentiation grows far faster with the problem dimension than the cost
+of the gradient, so exact second-order information should be avoided,
+relying instead on first-order (gradient) information alone.
 
 
-\subsection{Results}
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.8\linewidth]{forwarddiff_sv_f.pdf}
+	\caption{Cost, in equivalent evaluations of $f$, of computing the gradient and the Hessian of the PDE solver's objective by automatic differentiation, as a function of the problem dimension.}
+	\label{fig:tempo_derivada}
+\end{figure}
+\FloatBarrier
+
+At dimension 100, Figure~\ref{fig:tempo_derivada} shows that a single gradient evaluation already costs about as much as 25 evaluations of $f$, while a single Hessian evaluation costs more than 6400 evaluations of $f$.
+
+
+
+\subsection{Results in a coefficient estimation problem}
 To calibrate $\theta$ against this residual, four benchmark scenarios
 compare the same three solvers used throughout this report, namely BFGS
 (backtracking, order 2), BOBYQA, and Algorithm~\ref{complexity}, applied
 directly to $F(\theta)$ above where each solver stands in as the
 whole optimizer, rather than as Algorithm~\ref{complexity}'s internal
-subproblem solver. Two scenarios are \emph{twin} experiments, where the
+subproblem solver. Two scenarios are pregenered experiments, where the
 observations $z_{obs,i}$ are themselves generated by the model at a known
 $\theta^\star$, so the true minimizer is known exactly; the other two use
 the real observed data, where the true minimizer (if it exists) is
-unknown. BFGS and BOBYQA minimize the boxed, penalized sum of squares
-$\|F(\theta)\|_2^2 + \mathrm{penalty}(\theta)$ (box $[0,0.5]^{n_{grid}}$,
-penalty weight $10^6$); Algorithm~\ref{complexity} minimizes the
-unpenalized $f(\theta) = \frac12\|F(\theta)\|_2^2$ directly, so its $f$
-column below is, on runs where the box constraint is inactive, exactly
-half of the other two methods', e.g.\ real data, $n_{grid}=3$, below,
-where all three reach the same minimizer up to rounding, with
-$f\approx1.0085$ for BFGS/BOBYQA versus $f\approx0.5043$ for
-Algorithm~\ref{complexity}. RMSD is recomputed uniformly from the raw
-(unpenalized) residual, $\mathrm{RMSD}(\theta) = \|F(\theta)\|_2/\sqrt{m}$,
-at each method's minimizer, so it is directly comparable across all rows
-of every table below.
+unknown. BFGS and BOBYQA minimize the full sum of squares
+$\frac12\|F(\theta)\|_2^2 + \mathrm{penalty}(\theta)$, where $\mathrm{penalty}$
+is an additive box term (bounds $[0,0.5]^{n_{grid}}$, weight $10^6$) that
+evaluates to exactly $0$ whenever every coordinate of $\theta$ is feasible,
+as is the case at every minimizer reported below; Algorithm~\ref{complexity}
+minimizes $f(\theta) = \frac12\|F(\theta)\|_2^2$ directly. We consider a box ther for the BFGS and BOBYQA methods to help the convergence of solver. 
 
 \begin{table}[htbp]
 \centering
@@ -801,12 +814,23 @@ Algorithm~\ref{complexity} & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36
 \end{tabular}
 }%
 \end{table}
+\FloatBarrier
 
 \noindent
 All three methods converge to essentially the exact reference
 $\theta^\star=(0.20,0.15)$; Algorithm~\ref{complexity} is the cheapest of the three by
 every cost measure (fewest evaluations, least time) despite also reaching
 the tightest gradient norm and RMSD.
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.8\linewidth]{nive_novo.pdf}
+	\caption{Cost, in equivalent evaluations of $f$, of computing the gradient and the Hessian of the PDE solver's objective by automatic differentiation, as a function of the problem dimension.}
+	\label{fig:performace_n_2_fake}
+\end{figure}
+\FloatBarrier
+
+
 
 \begin{table}[htbp]
 \centering
@@ -818,6 +842,8 @@ the tightest gradient norm and RMSD.
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
 \toprule
+\FloatBarrier
+
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
 BFGS (backtracking) & $1.74\times10^{-6}$ & $1.03\times10^{-9}$ & $1.32\times10^{-4}$ & 205 & 168 & 9959.2 & \texttt{GradientNorm} \\
@@ -827,6 +853,7 @@ Algorithm~\ref{complexity} & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89
 \end{tabular}
 }%
 \end{table}
+\FloatBarrier
 
 \noindent
 At $n_{grid}=10$ the gap between Algorithm~\ref{complexity} and the other two widens sharply.
@@ -852,6 +879,15 @@ Algorithm~\ref{complexity} & $5.46\times10^{-2}$ & $0.5043$ & $6.41\times10^{-9}
 \end{tabular}
 }%
 \end{table}
+\FloatBarrier
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.8\linewidth]{nive_novo.pdf}
+	\caption{Cost, in equivalent evaluations of $f$, of computing the gradient and the Hessian of the PDE solver's objective by automatic differentiation, as a function of the problem dimension.}
+	\label{fig:performace_n_2_real}
+\end{figure}
+\FloatBarrier
 
 \noindent
 On real data, all three methods agree closely on the minimizer itself.
@@ -870,24 +906,36 @@ BFGS, at an evaluation count and wall-clock time comparable to BFGS.
 \toprule
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
-BFGS (backtracking) & $4.81\times10^{-2}$ & $0.7822$ & $1.19\times10^{6}$ & 171 & 35 & 3654.2 & \texttt{alpha\_too\_small} \\
-BOBYQA & $4.64\times10^{-2}$ & $0.7285$ & $1.11$ & 840 & 0 & 10297.8 & \texttt{SUCCESS} \\
-Algorithm~\ref{complexity} & \multicolumn{7}{l}{not available in this run} \\
+BFGS (backtracking) & $4.81\times10^{-2}$ & $0.7822$ & $1.19\times10^{6}$ & 171 & 35 & 3691.9 & \texttt{alpha\_too\_small} \\
+BOBYQA & $4.64\times10^{-2}$ & $0.7285$ & $1.11$ & 840 & 0 & 10388.5 & \texttt{SUCCESS} \\
+Algorithm~\ref{complexity} & $4.89\times10^{-2}$ & $0.4049$ & $1.29$ & 1008 & 501 & 31705.6 & \texttt{maximum\_iterations} \\
 \bottomrule
 \end{tabular}
 }%
 \end{table}
+\FloatBarrier
 
 \noindent
-This is the hardest of the four scenarios. BFGS's backtracking line search
-stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with a
+This is the hardest of the four scenarios, and the only one where none of
+the three methods reaches a stationary point. BFGS's backtracking line
+search stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with a
 gradient norm still at $\sim1.19\times10^6$, many orders of magnitude away
 from a stationary point, despite needing fewer evaluations and less time
-than BOBYQA. BOBYQA reports \texttt{SUCCESS} and reaches the lowest RMSD
-($4.64\times10^{-2}$), but needs $840$ evaluations and $\approx2.9$h of
-wall-clock time to get there. Algorithm~\ref{complexity} was not run (or did not
-complete) for this scenario; that row is left for a future update once
-\texttt{comparar\_solvers\_real\_dim10} has been re-run with it included.
+than BOBYQA or Algorithm~\ref{complexity}. BOBYQA reports \texttt{SUCCESS}
+(its own termination code, not a gradient-based one --- it never evaluates
+$\nabla f$) and reaches the lowest RMSD ($4.64\times10^{-2}$), but needs
+$840$ evaluations and $\approx2.9$h of wall-clock time to get there.
+Algorithm~\ref{complexity} exhausts its iteration budget
+(\texttt{maximum\_iterations}) after $1008$ residual and $501$ Jacobian
+evaluations ($\approx8.8$h): it reaches a gradient norm of $\approx1.29$,
+between BFGS's stall point and a stationary point, at the highest
+evaluation count and wall-clock cost of the three. Unlike the easier
+scenarios above, more evaluations do not translate into a better
+outcome here --- all three land on different minimizers with comparable
+RMSD ($4.6$--$4.9\times10^{-2}$), and none certifies first-order
+optimality; MADS is omitted from this table --- its run at this dimension
+did not finish cleanly (the saved output was incomplete) and is left for
+a future update.
 
 
 \clearpage
@@ -906,11 +954,6 @@ Springer, 2019.
 \bibitem{DennisWolkowicz1993}
 J. E. Dennis, Jr. and H. Wolkowicz, \emph{Sizing and least-change secant
 methods}, SIAM J. Numer. Anal., 30 (1993), pp.~1291--1314.
-
-\bibitem{LuksanSpedicato2000}
-L. Luk\v{s}an and E. Spedicato, \emph{Variable metric methods for
-unconstrained optimization and nonlinear least squares}, J. Comput. Appl.
-Math., 124 (2000), pp.~61--95.
 
 \bibitem{FortunatoMartinez2025}
 F. A. Fortunato and J. M. Mart\'inez, \emph{KKT-free Constrained

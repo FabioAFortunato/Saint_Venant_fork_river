@@ -472,14 +472,16 @@ end
 # `bfgs_puro_penalizado` em `ffjm2.jl`, só que sobre o resíduo pré-gerado
 # (`sv_fork_assimilation_pregerado`) em vez do resíduo real
 # (`sv_fork_assimilation`). Serve para o experimento gêmeo: minimizar
-# `sum(residual.^2) + sv_box_penalty(...)` a partir de um `x0` diferente de
-# `ng_verdadeiro` e checar se o BFGS recupera `ng_verdadeiro`.
+# `0.5 * (sum(residual.^2) + sv_box_penalty(...))` a partir de um `x0`
+# diferente de `ng_verdadeiro` e checar se o BFGS recupera `ng_verdadeiro`. O
+# fator 0.5 iguala esse objetivo ao de `ffjm2` (f(θ) = ½‖F(θ)‖²), que não o
+# tem, para que a coluna `f` dos dois fique diretamente comparável.
 # ==============================================================================
 
 """
     bfgs_puro_penalizado_pregerado(x_otimo, x0; tbeg=0.0, tend=31.0, kwargs...)
 
-Roda `Optim.BFGS` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+Roda `Optim.BFGS` sobre `0.5 * (sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight))`,
 onde `residual = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro`
 e `dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)` — ou seja,
 `x_otimo` é o `ng` "verdadeiro" que gera os dados pré-gerados usados como
@@ -533,7 +535,7 @@ function bfgs_puro_penalizado_pregerado(
     latest_gradient = Ref{Any}(nothing)
 
     raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
-    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+    pen_objective(x) = 0.5 * (sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight))
 
     function objective(x)
         start_ns = time_ns()
@@ -649,7 +651,7 @@ end
 """
     bobyqa_puro_penalizado_pregerado(x_otimo, x0; tbeg=0.0, tend=31.0, kwargs...)
 
-Roda `NLopt.:LN_BOBYQA` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
+Roda `NLopt.:LN_BOBYQA` sobre `0.5 * (sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight))`,
 onde `residual = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro`
 e `dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)` — mesmo
 experimento gêmeo de [`bfgs_puro_penalizado_pregerado`](@ref): `x_otimo` é o
@@ -691,7 +693,7 @@ function bobyqa_puro_penalizado_pregerado(
     function_evaluation_time_seconds = Ref(0.0)
 
     raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
-    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+    pen_objective(x) = 0.5 * (sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight))
 
     function objective(x)
         start_ns = time_ns()
@@ -1017,14 +1019,18 @@ end
 # ffjm2 minimiza `raw_residual` diretamente (sem `sv_box_penalty`), igual ao
 # uso de `ffjm2` em `comparar_ffjm2_bfgs` — os outros dois solvers usam a
 # penalidade de caixa nativamente ou via `sv_box_penalty` (ver docstring de
-# cada `*_puro_penalizado*`).
+# cada `*_puro_penalizado*`). Desde que `*_puro_penalizado_pregerado` passou a
+# escalar seu objetivo por 0.5 (mesma convenção f(θ) = ½‖F(θ)‖² do ffjm2), a
+# coluna `f` também fica diretamente comparável entre os três, não só o RMSD —
+# desde que a penalidade de caixa esteja inativa no minimizador encontrado.
 # ==============================================================================
 
 function _comparar_solvers(
     raw_residual::Function,
     dim::Integer,
     output,
-    solver_runs,
+    solver_runs;
+    points_output = nothing,
 )
     csv_field(value) = begin
         text = value isa AbstractVector ? repr(collect(value)) : string(value)
@@ -1034,6 +1040,7 @@ function _comparar_solvers(
         "method", "dimension", "RMSD", "gradient_norm", "execution_time_seconds",
         "function_evaluations", "gradient_evaluations", "converged", "status", "f_x", "minimizer",
     )
+    points_header = ("method", "point_index", "x")
 
     function metrics(x)
         residual = collect(raw_residual(x))
@@ -1046,33 +1053,50 @@ function _comparar_solvers(
     end
 
     mkpath(dirname(output))
+    points_output === nothing || mkpath(dirname(points_output))
     rows = NamedTuple[]
     open(output, "w") do io
         write(io, join(header, ','), '\n')
-        for (method, run) in solver_runs
-            println("Executando $method")
-            r = run()
-            m = metrics(r.minimizer)
-            row = (;
-                method, dimension = dim, RMSD = m.rmsd, gradient_norm = m.gradient_norm,
-                execution_time_seconds = r.execution_time_seconds,
-                function_evaluations = r.function_evaluations,
-                gradient_evaluations = r.gradient_evaluations,
-                converged = r.converged, status = string(r.status),
-                f_x = r.minimum, minimizer = copy(r.minimizer),
-            )
-            push!(rows, row)
-            write(io, join(csv_field.(values(row)), ','), '\n')
-            flush(io)
-            println(
-                "  minimizer=$(row.minimizer) RMSD=$(row.RMSD) fevals=$(row.function_evaluations) ",
-                "tempo=$(round(row.execution_time_seconds, digits=1))s status=$(row.status)",
-            )
+        points_io = points_output === nothing ? nothing : open(points_output, "w")
+        try
+            points_io === nothing || write(points_io, join(points_header, ','), '\n')
+            for (method, run) in solver_runs
+                println("Executando $method")
+                r = run()
+                m = metrics(r.minimizer)
+                row = (;
+                    method, dimension = dim, RMSD = m.rmsd, gradient_norm = m.gradient_norm,
+                    execution_time_seconds = r.execution_time_seconds,
+                    function_evaluations = r.function_evaluations,
+                    gradient_evaluations = r.gradient_evaluations,
+                    converged = r.converged, status = string(r.status),
+                    f_x = r.minimum, minimizer = copy(r.minimizer),
+                )
+                push!(rows, row)
+                write(io, join(csv_field.(values(row)), ','), '\n')
+                flush(io)
+                println(
+                    "  minimizer=$(row.minimizer) RMSD=$(row.RMSD) fevals=$(row.function_evaluations) ",
+                    "tempo=$(round(row.execution_time_seconds, digits=1))s status=$(row.status)",
+                )
+                if points_io !== nothing
+                    accepted_points = get(r, :accepted_points, nothing)
+                    if accepted_points !== nothing
+                        for (i, xi) in enumerate(accepted_points)
+                            write(points_io, join(csv_field.((method, i, collect(xi))), ','), '\n')
+                        end
+                        flush(points_io)
+                    end
+                end
+            end
+        finally
+            points_io === nothing || close(points_io)
         end
     end
 
     println("Comparação salva em: $output")
-    return (; rows, output)
+    points_output === nothing || println("Pontos aceitos salvos em: $points_output")
+    return (; rows, output, points_output)
 end
 
 """
@@ -1107,7 +1131,7 @@ function comparar_solvers_pregerado(
     maxiter::Integer = 500,
     f_calls_limit::Integer = 1000,
     g_calls_limit::Integer = 500,
-    g_tol::Real = 1e-4,
+    g_tol::Real = 1e-3,
     rhobeg::Real = 0.01,
     rhoend::Real = 1e-6,
     ffjm2_maxiter::Integer = 500,
@@ -1123,13 +1147,13 @@ function comparar_solvers_pregerado(
             x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit, g_tol,
             penalty_weight, lower, upper, show_trace,
         )),
-        ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
-            x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
-        )),
+        # ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
+        #     x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+        # )),
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
-            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, show_trace, ffjm2_options...)
+            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace, ffjm2_options...)
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
                     r.function_evaluations, r.gradient_evaluations, r.converged, r.status)
         end),
@@ -1147,6 +1171,14 @@ e `ffjm2` sobre dados reais
 [`comparar_solvers_pregerado`](@ref), mas sem `x_otimo` (não é experimento
 gêmeo). `bfgs_puro_penalizado` ignora `tbeg`/`tend` (fixos em `0.0`/`31.0`
 dentro da própria função); os demais solvers usam os valores passados aqui.
+
+Além do CSV principal (`output`), salva em `points_output` todos os pontos
+"aceitos" de cada método, um por linha (`method,point_index,x`): para BFGS,
+o `x` de cada iteração do `Optim.trace`; para BOBYQA, os pontos avaliados
+que bateram um novo recorde (BOBYQA não expõe aceitação/rejeição interna —
+ver docstring de [`bobyqa_puro_penalizado`](@ref)); para `ffjm2`, o `x` no
+início de cada iteração externa (via `callback`), que é sempre o último
+passo de fato aceito pelo teste de razão ρ.
 """
 function comparar_solvers_real(
     x0::AbstractVector;
@@ -1155,13 +1187,16 @@ function comparar_solvers_real(
     output = normpath(joinpath(
         @__DIR__, "..", "results", "comparacao_solvers_real_dim$(length(x0)).csv",
     )),
+    points_output = normpath(joinpath(
+        @__DIR__, "..", "results", "comparacao_solvers_real_dim$(length(x0))_pontos.csv",
+    )),
     penalty_weight::Real = 1e6,
     lower::AbstractVector = zeros(length(x0)),
     upper::AbstractVector = fill(0.5, length(x0)),
     maxiter::Integer = 500,
     f_calls_limit::Integer = 1000,
     g_calls_limit::Integer = 500,
-    g_tol::Real = 1e-4,
+    g_tol::Real = 1e-3,
     rhobeg::Real = 0.01,
     rhoend::Real = 1e-6,
     ffjm2_maxiter::Integer = 500,
@@ -1182,13 +1217,110 @@ function comparar_solvers_real(
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
-            r = ffjm2(counted_residual, x0; maxiter = ffjm2_maxiter, show_trace, ffjm2_options...)
+            accepted_points = Vector{Vector{Float64}}()
+            track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
+            r = ffjm2(
+                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                callback = track_accepted, ffjm2_options...,
+            )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
-                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status)
+                    r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
+                    accepted_points)
         end),
     )
 
-    return _comparar_solvers(raw_residual, dim, output, solver_runs)
+    return _comparar_solvers(raw_residual, dim, output, solver_runs; points_output)
+end
+
+# ==============================================================================
+# Heatmap de RMSD "a priori" do experimento gêmeo (dimensão 2, ótimo
+# `x_otimo` conhecido) — análogo a `assimilation_rmsd_heatmap`
+# (`assimilacao.jl`), que faz a mesma varredura de grade para os dados
+# REAIS via `sv_fork_new`. Aqui a varredura usa o resíduo do experimento
+# gêmeo (`sv_fork_dados_pregerados`/`sv_fork_assimilation_pregerado`), então
+# o RMSD mínimo da grade coincide (a menos da resolução da grade) com
+# `x_otimo`, não com um mínimo empírico desconhecido.
+#
+# Escreve o CSV no MESMO formato lido por `le_assimilation_heatmap_matrix`
+# (`assimilacao.jl`, cabeçalho `n2/n1` na célula (1,1), grade de `n1` na
+# primeira linha, grade de `n2` na primeira coluna) — ou seja, é "a priori"
+# no sentido de que só gera a matriz de RMSD antes de/independente de rodar
+# qualquer solver; para plotar, basta apontar `matrix_output` (ou
+# `pontos_csv`, se quiser sobrepor caminhos de solvers) para o CSV gerado
+# aqui em `plot_assimilacao_heatmap_tend_31_latex`/
+# `plot_assimilacao_heatmap_tend_31_latex_com_solvers` (`plots.jl`/
+# `scripts/main.jl`) — nenhuma dessas funções de plot precisa mudar.
+# ==============================================================================
+
+"""
+    assimilation_rmsd_heatmap_pregerado(; x_otimo, tin=0.0, tend=31.0,
+                                            grid_points=50, lower=0.05,
+                                            upper=0.3, rmsd_max=3.0,
+                                            matrix_output=..., show_trace=true)
+
+Varre uma grade `grid_points × grid_points` de `(n1, n2) ∈ [lower,upper]^2`
+e calcula, em cada ponto, o RMSD do resíduo do experimento gêmeo contra os
+dados sintéticos gerados por `x_otimo` (`sv_fork_dados_pregerados(x_otimo,
+tin, tend)`, `x_otimo` deve ter dimensão 2). Valores não finitos ou acima
+de `rmsd_max` são saturados em `rmsd_max`, igual a
+`assimilation_rmsd_heatmap` (`assimilacao.jl`), cujo formato de CSV este
+escreve de volta (compatível com `le_assimilation_heatmap_matrix` e as
+funções de plot que dependem dela).
+
+Como os dados são gerados pelo próprio `x_otimo`, o mínimo do RMSD na
+grade deve coincidir com `x_otimo` a menos da resolução da grade (`RMSD =
+0` exatamente em `x_otimo`, se ele cair sobre um nó) — diferente do
+heatmap de dados reais, cujo mínimo empírico é desconhecido a priori.
+Devolve `(; n1, n2, RMSD, matrix_output, x_otimo)`.
+"""
+function assimilation_rmsd_heatmap_pregerado(;
+    x_otimo::AbstractVector,
+    tin::Real = 0.0,
+    tend::Real = 31.0,
+    grid_points::Integer = 50,
+    lower::Real = 0.05,
+    upper::Real = 0.3,
+    rmsd_max::Real = 3.0,
+    matrix_output = normpath(joinpath(@__DIR__, "..", "results", "assimilacao_heatmap_pregerado_tend_31.csv")),
+    show_trace::Bool = true,
+)
+    length(x_otimo) == 2 ||
+        throw(ArgumentError("x_otimo deve ter dimensão 2 (grade 2D de n1 × n2)"))
+
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tin, tend)
+    raw_residual(x) = sv_fork_assimilation_pregerado(x, tin, tend, dados_pregerados, nothing).erro
+
+    grid = collect(range(lower, upper, length = grid_points))
+    Z = Matrix{Float64}(undef, grid_points, grid_points)
+
+    total = grid_points * grid_points
+    aval = 0
+    for (j, n2) in enumerate(grid)
+        for (i, n1) in enumerate(grid)
+            aval += 1
+            erro = raw_residual([n1, n2])
+            rmsd = norm(erro) / sqrt(length(erro))
+            if !isfinite(rmsd) || rmsd > rmsd_max
+                rmsd = rmsd_max
+            end
+            Z[j, i] = rmsd
+
+            if show_trace && (aval == 1 || aval % 100 == 0 || aval == total)
+                println("Heatmap gêmeo (x_otimo=$x_otimo): avaliação $aval/$total | n1=$n1 | n2=$n2 | RMSD=$rmsd")
+            end
+        end
+    end
+
+    mkpath(dirname(matrix_output))
+    open(matrix_output, "w") do io
+        write(io, join(vcat("n2/n1", string.(grid)), ','), '\n')
+        for j in 1:grid_points
+            write(io, join(vcat(string(grid[j]), string.(Z[j, :])), ','), '\n')
+        end
+    end
+    println("Matriz RMSD do experimento gêmeo (x_otimo=$x_otimo) salva em: $matrix_output")
+
+    return (; n1 = grid, n2 = grid, RMSD = Z, matrix_output, x_otimo)
 end
 
 # ==============================================================================
@@ -1212,7 +1344,7 @@ Ver [`comparar_solvers_pregerado`](@ref).
 """
 function comparar_solvers_twin_dim2(;
     x_otimo::AbstractVector = [0.2, 0.15],
-    x0::AbstractVector = fill(0.09, 2),
+    x0::AbstractVector = fill(0.25, 2),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
     maxiter::Integer = 500,
@@ -1242,7 +1374,7 @@ grandeza são estáveis. Ver [`comparar_solvers_pregerado`](@ref).
 """
 function comparar_solvers_twin_dim10(;
     x_otimo::AbstractVector = collect(range(0.12, 0.07, length = 10)),
-    x0::AbstractVector = fill(0.09, 10),
+    x0::AbstractVector = fill(0.25, 10),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
     maxiter::Integer = 500,
@@ -1260,26 +1392,28 @@ function comparar_solvers_twin_dim10(;
 end
 
 """
-    comparar_solvers_real_dim3(; kwargs...)
+    comparar_solvers_real_dim2(; kwargs...)
 
-Dados reais em dimensão 3: `x0 = fill(0.09, 3)` (mesmo chute inicial de
-`comparar_ffjm2_bfgs`, `ffjm2.jl`). Ver [`comparar_solvers_real`](@ref).
+Dados reais em dimensão 2: `x0 = fill(0.09, 2)`. Ver
+[`comparar_solvers_real`](@ref) — inclui, além do CSV principal, um segundo
+CSV (`points_output`) com todos os pontos aceitos de cada método.
 """
-function comparar_solvers_real_dim3(;
-    x0::AbstractVector = fill(0.09, 3),
+function comparar_solvers_real_dim2(;
+    x0::AbstractVector = fill(0.25, 2),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
     maxiter::Integer = 500,
     f_calls_limit::Integer = 1000,
     g_calls_limit::Integer = 500,
     ffjm2_maxiter::Integer = 500,
-    show_trace::Bool = false,
-    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_real_dim3.csv")),
+    show_trace::Bool = true,
+    output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_real_dim2.csv")),
+    points_output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_real_dim2_pontos.csv")),
     kwargs...,
 )
     return comparar_solvers_real(
         x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
-        ffjm2_maxiter, show_trace, output, kwargs...,
+        ffjm2_maxiter, show_trace, output, points_output, kwargs...,
     )
 end
 
@@ -1289,7 +1423,7 @@ end
 Dados reais em dimensão 10: `x0 = fill(0.09, 10)`. Ver [`comparar_solvers_real`](@ref).
 """
 function comparar_solvers_real_dim10(;
-    x0::AbstractVector = fill(0.09, 10),
+    x0::AbstractVector = fill(0.25, 10),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
     maxiter::Integer = 500,
@@ -1306,4 +1440,136 @@ function comparar_solvers_real_dim10(;
     )
 end
 
+# ==============================================================================
+# Acompanhamento do `ffjm2` sozinho (sem BFGS/BOBYQA/MADS) em dados reais,
+# iteração a iteração — feito para investigar de perto se a região onde a
+# simulação diverge (`P`, na notação do artigo) fica perto do minimizador
+# encontrado com dados reais, o que explicaria por que nenhum solver atinge
+# `‖∇f‖→0` nesse cenário (ao contrário dos experimentos gêmeos, onde
+# `x_otimo` é construído bem dentro da região viável).
+# ==============================================================================
+
+"""
+    acompanhar_ffjm2_real_dim3(; x0=fill(0.09, 3), tbeg=0.0, tend=31.0,
+                                  update=:psb, maxiter=30, show_trace=true,
+                                  ffjm2_options=(;))
+
+Roda só o `ffjm2` (nenhum outro solver) no problema de calibração com dados
+reais (`sv_fork_assimilation`), dimensão 3. Com `show_trace=true` (padrão),
+`ffjm2` imprime, a cada avaliação externa — cada tentativa de `μ`
+dentro do laço principal, não só as aceitas —, a iteração `k`, `FO`
+(`0.5*||F(x_tentativa)||²` naquele ponto) e `μ` (a regularização usada
+naquela tentativa): ver as linhas de `show_trace` em `ffjm2.jl` (dentro do
+laço em `μ` de 2.3.2, e na busca linear de `k=0`).
+"""
+function acompanhar_ffjm2_real_dim3(;
+    x0::AbstractVector = fill(0.09, 2),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
+    maxiter::Integer = 100,
+    show_trace::Bool = true,
+    ffjm2_options = (;),
+)
+    x = collect(float.(x0))
+    raw_residual(z) = sv_fork_assimilation(z, tbeg, tend, nothing).erro
+    resultado = ffjm2(raw_residual, x; update, maxiter, show_trace, ffjm2_options...)
+    println(
+        "\nFinal: minimizer=", resultado.minimizer, " f=", resultado.minimum,
+        " ||grad||=", norm(resultado.gradient), " status=", resultado.status,
+        " iterations=", resultado.iterations,
+    )
+    return resultado
+end
+
+# ==============================================================================
+# Roda só o `ffjm2` (sem BFGS/BOBYQA) nos 4 cenários já usados nas tabelas de
+# comparação (twin dim2, twin dim10, real dim3, real dim10) — mesmos
+# `x_otimo`/`x0`/orçamento dos presets `comparar_solvers_twin_dim2`/
+# `comparar_solvers_twin_dim10`/`comparar_solvers_real_dim10` (o cenário
+# "real dim3" não tem mais preset correspondente desde que
+# `comparar_solvers_real_dim3` virou `comparar_solvers_real_dim2`; o `x0`
+# aqui é reproduzido manualmente), sem recalcular BFGS/BOBYQA (cujos
+# resultados já obtidos não são tocados aqui). Feito para re-rodar só a
+# linha do `ffjm2` depois de uma correção que só o afeta (ex.: alinhar
+# `g_tol` com o do BFGS, ver `comparar_solvers_pregerado`/`comparar_solvers_real`).
+# ==============================================================================
+
+"""
+    rodar_ffjm2_quatro_cenarios(; tbeg=0.0, tend=31.0, ffjm2_maxiter=500,
+                                   g_tol=1e-3, update=:psb, show_trace=true,
+                                   ffjm2_options=(;))
+
+Roda só o `ffjm2` nos 4 cenários de parâmetro das tabelas de comparação —
+twin dim 2 (`x_otimo=[0.2,0.15]`), twin dim 10 (`x_otimo` decrescente de
+`0.12` a `0.07`), dados reais dim 3 e dados reais dim 10 (`x0=fill(0.09,·)`
+em todos) — com os mesmos valores usados pelos presets
+`comparar_solvers_twin_dim2`/`comparar_solvers_twin_dim10`/
+`comparar_solvers_real_dim10` (o cenário "real dim3" não tem mais preset
+correspondente, ver comentário acima). Não roda BFGS
+nem BOBYQA. Devolve um `Vector` de `NamedTuple`s (`cenario`, `dimension`,
+`minimizer`, `rmsd`, `f`, `gradient_norm`, `function_evaluations`,
+`gradient_evaluations`, `execution_time_seconds`, `converged`, `status`) e
+imprime um resumo por cenário, no mesmo conjunto de métricas das tabelas do
+`.tex` (RMSD, `f`, `||grad f||`, Func./Grad. evals, tempo, status).
+"""
+function rodar_ffjm2_quatro_cenarios(;
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    ffjm2_maxiter::Integer = 500,
+    g_tol::Real = 1e-3,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
+    show_trace::Bool = true,
+    ffjm2_options = (;),
+)
+    cenarios = (
+        (nome = "twin dim2", tipo = :twin, x_otimo = [0.2, 0.15], x0 = fill(0.09, 2)),
+        (nome = "twin dim10", tipo = :twin, x_otimo = collect(range(0.12, 0.07, length = 10)), x0 = fill(0.09, 10)),
+        (nome = "real dim3", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 3)),
+        (nome = "real dim10", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 10)),
+    )
+
+    resultados = NamedTuple[]
+    for cenario in cenarios
+        println("\n=== ffjm2: $(cenario.nome) ===")
+        x0 = collect(float.(cenario.x0))
+
+        raw_residual = if cenario.tipo === :real
+            (x -> sv_fork_assimilation(x, tbeg, tend, nothing).erro)
+        else
+            dados_pregerados = sv_fork_dados_pregerados(cenario.x_otimo, tbeg, tend)
+            (x -> sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro)
+        end
+
+        r = ffjm2(raw_residual, x0; update, maxiter = ffjm2_maxiter, g_tol, show_trace, ffjm2_options...)
+
+        residual_final = collect(raw_residual(r.minimizer))
+        rmsd = norm(residual_final) / sqrt(length(residual_final))
+        status = string(r.status)
+
+        resultado = (;
+            cenario = cenario.nome,
+            dimension = length(x0),
+            minimizer = copy(r.minimizer),
+            rmsd,
+            f = r.minimum,
+            gradient_norm = norm(r.gradient),
+            function_evaluations = r.function_evaluations,
+            gradient_evaluations = r.gradient_evaluations,
+            execution_time_seconds = r.execution_time_seconds,
+            converged = r.converged,
+            status,
+        )
+        push!(resultados, resultado)
+
+        @printf(
+            "ffjm2 (%s): RMSD=%.3e  f=%.4f  ||grad||=%.3e  fevals=%d  gevals=%d  tempo=%.1fs  status=%s\n",
+            cenario.nome, rmsd, r.minimum, norm(r.gradient),
+            r.function_evaluations, r.gradient_evaluations,
+            r.execution_time_seconds, status,
+        )
+    end
+
+    return resultados
+end
 

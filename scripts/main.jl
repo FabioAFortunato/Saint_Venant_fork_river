@@ -584,60 +584,6 @@ function plot_assimilacao_heatmap_tend_31_latex_com_todos_bfgs_aceitos(;
 end
 
 
-function le_benchmark_forwarddiff(data_output = "results/benchmark_forwarddiff_sv.csv")
-    dados = readdlm(data_output, ',', Any)
-    dims = Int.(dados[2:end, 1])
-    metrics = String.(dados[2:end, 2])
-    seconds = Float64.(dados[2:end, 3])
-
-    return (; data_output, dims, metrics, seconds)
-end
-
-function plot_benchmark_forwarddiff_tempo(;
-    data_output = "results/benchmark_forwarddiff_sv.csv",
-    output = "results/benchmark_forwarddiff_sv_tempo.pdf",
-)
-    dados = le_benchmark_forwarddiff(data_output)
-
-    idx_grad = findall(==("gradient"), dados.metrics)
-    idx_hess = findall(==("hessian"), dados.metrics)
-
-    ord_grad = sortperm(dados.dims[idx_grad])
-    ord_hess = sortperm(dados.dims[idx_hess])
-
-    dims_grad = dados.dims[idx_grad][ord_grad]
-    tempo_grad = dados.seconds[idx_grad][ord_grad]
-
-    dims_hess = dados.dims[idx_hess][ord_hess]
-    tempo_hess = dados.seconds[idx_hess][ord_hess]
-
-    p = Plots.plot(
-        dims_grad,
-        tempo_grad;
-        xlabel = "Dimension",
-        ylabel = "Time (s)",
-        label = "Gradient (ForwardDiff)",
-        marker = :circle,
-        linewidth = 2,
-        yscale = :log10,
-        legend = :topleft,
-    )
-
-    Plots.plot!(
-        p,
-        dims_hess,
-        tempo_hess;
-        label = "Hessian (ForwardDiff)",
-        marker = :square,
-        linewidth = 2,
-    )
-
-    mkpath(dirname(output))
-    Plots.savefig(p, output)
-
-    return (; plot = p, output, dims_grad, tempo_grad, dims_hess, tempo_hess)
-end
-
 function excluir()
     plot_busca_exaustiva_derivada_run_problems(
     X0 = [0.09, 0.09],

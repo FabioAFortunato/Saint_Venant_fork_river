@@ -181,6 +181,21 @@ modelo a Gauss-Newton puro. Só a Hessiana do modelo culpado é reiniciada; as
 dos demais modelos em `update` continuam intactas. O subproblema é então
 resolvido de novo com essa `H` zerada antes de tentar o próximo `μ`.
 
+Esse reset assume que `ρₖ` baixo sempre significa "o modelo previu mal" —
+mas, em problemas com região proibida `P` (simulações que podem divergir
+para certos `x`, ver `_research/ffjm2.pdf`, Seção 2), uma rejeição também
+pode significar "`x_k+d` caiu em `P`", caso em que a Hessiana pode
+continuar sendo uma boa aproximação e zerá-la só atrasa a convergência.
+`divergence_reduction_threshold` (padrão `-Inf`, ou seja, desligado) separa
+os dois casos: se `actual_reduction` (a redução real observada, tipicamente
+muito mais negativa que qualquer previsão de modelo quando `F` devolve um
+valor sentinela de divergência) cair abaixo desse limiar, o reset é pulado
+— só `μ` cresce. O passo continua sendo rejeitado normalmente (isso é
+decidido só pelo teste de razão, independente deste parâmetro); a única
+coisa que muda é se a Hessiana sobrevive à rejeição. O limiar certo depende
+da escala do valor sentinela usado pela `F` de cada problema, por isso não
+há um padrão universal ligado.
+
 Um modelo reiniciado numa iteração fica de fora da disputa por direção
 (`for model in models` de 2.3.2) só na iteração externa seguinte — dá espaço
 pros outros modelos de `update` antes dele voltar a competir. Ele continua
@@ -240,7 +255,7 @@ chamada.
 function ffjm2(
     F,
     x0::AbstractVector;
-    update::Union{Symbol,Tuple{Vararg{Symbol}}} = FFJM2_ALL_MODELS,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
     jacobian = nothing,
     maxiter::Integer = 1000,
     g_tol::Real = 1e-8,
@@ -252,13 +267,14 @@ function ffjm2(
     model_multistart::Integer = 100,
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
-    model_solver::Symbol = :bfgs,
+    model_solver::Symbol = :ipopt,
     mu_initial::Real = 1.0,
     mu_grow::Real = 10.0,
     mu_min::Real = 1e-8,
-    mu_max::Real = 1e12,
+    mu_max::Real = 1e9,
     ratio_eta1::Real = 0.01,
     max_mu_increases::Integer = 10,
+    divergence_reduction_threshold::Real = -Inf,
     gamma_bar::Real = 10.0,
     initial_scaling::Bool = false,
     update_tol::Real = sqrt(eps(Float64)),
@@ -487,7 +503,7 @@ function ffjm2(
             fnew = T(0.5) * dot(rnew, rnew)
             accepted = true
             if show_trace
-                println("  busca linear (gradiente, ordem 2): α = $α | f(x+αd) = $fnew")
+                println("  [k=$k] busca linear (gradiente, ordem 2): α = $α | FO = $fnew | μ = $mu")
             end
         else
             # Modelos reiniciados na iteração anterior não disputam a
@@ -549,7 +565,7 @@ function ffjm2(
 
                 if show_trace
                     println(
-                        "  μ = $mu | fonte = $direction_source | red. prevista = ",
+                        "  [k=$k] μ = $mu | FO = $fnew | fonte = $direction_source | red. prevista = ",
                         predicted_reduction, " | red. real = ", actual_reduction,
                         " | ρ = ", ratio,
                     )
@@ -569,7 +585,21 @@ function ffjm2(
                 # reiniciado; os demais mantêm sua própria `H`. Idempotente: se
                 # já estiver zerada (ex.: tentativa anterior já reiniciou),
                 # repetir não tem efeito.
-                if best_model_result !== nothing
+                #
+                # Exceção: se `actual_reduction` cair abaixo de
+                # `divergence_reduction_threshold` (padrão `-Inf`, ou seja,
+                # desligado), a rejeição é tratada como sinal de que
+                # `x_k+d` caiu numa região proibida/divergente (`P`, na
+                # notação do artigo) em vez de o modelo estar genuinamente
+                # errado — nesse caso a Hessiana é preservada (só μ cresce).
+                # `actual_reduction = NaN` também cai neste caso (`NaN >=
+                # limiar` é sempre falso). O limiar é específico do
+                # problema (depende da escala do valor sentinela usado por
+                # `F` para sinalizar divergência) — por isso o padrão é
+                # `-Inf`, que nunca dispara e preserva o comportamento
+                # anterior.
+                if best_model_result !== nothing &&
+                   actual_reduction >= T(divergence_reduction_threshold)
                     for Hi in H[direction_source]
                         fill!(Hi, zero(T))
                     end
@@ -1753,11 +1783,14 @@ end
 """
     bfgs_puro_penalizado(x0; kwargs...)
 
-Minimiza a soma dos quadrados dos resíduos de [`sv_residual`](@ref) com
-`Optim.BFGS()` e acrescenta uma penalidade quadrática quando alguma variável
-viola `lower` ou `upper`. Interrompe a otimização quando o passo aceito é
-menor que `alpha_min`. O retorno possui os mesmos campos de `bfgs_puro` para
-permitir comparações diretas entre os dois métodos.
+Minimiza `0.5 * (sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight))`
+com `Optim.BFGS()`, onde `residual = sv_fork_assimilation(x, 0.0, 31.0, nothing).erro`
+— o fator `0.5` iguala este objetivo ao de `ffjm2` (f(θ) = ½‖F(θ)‖²), que não o
+tem, para que a coluna `f` dos dois fique diretamente comparável. Interrompe a
+otimização quando o passo aceito é menor que `alpha_min`. O retorno possui os
+mesmos campos de `bfgs_puro`, mais `accepted_points` (todo `state.x` do
+`Optim.trace`, um por iteração externa, na ordem), para permitir comparações
+diretas entre os dois métodos.
 """
 function bfgs_puro_penalizado(
     x0::AbstractVector;
@@ -1801,7 +1834,7 @@ function bfgs_puro_penalizado(
     # `grad!` passar por uma segunda closure equivalente construída dentro de
     # `sv_gradient!`.
     raw_residual(x) = sv_fork_assimilation(x, 0.0, 31.0, nothing).erro
-    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+    pen_objective(x) = 0.5 * (sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight))
 
     function objective(x)
         start_ns = time_ns()
@@ -1881,6 +1914,7 @@ function bfgs_puro_penalizado(
         state.metadata["Current step size"]
         for state in Optim.trace(result) if state.iteration > 0
     ]
+    accepted_points = [copy(state.metadata["x"]) for state in Optim.trace(result)]
 
     return (;
         minimizer,
@@ -1894,6 +1928,7 @@ function bfgs_puro_penalizado(
         execution_time_seconds,
         rejected_directions = 0,
         alphas,
+        accepted_points,
         solution = result,
         u = minimizer,
         objective = Optim.minimum(result),
@@ -1919,12 +1954,16 @@ end
 """
     bobyqa_puro_penalizado(x0; tbeg=0.0, tend=31.0, kwargs...)
 
-Roda `NLopt.:LN_BOBYQA` sobre `sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight)`,
-onde `residual = sv_fork_assimilation(x, tbeg, tend, nothing).erro` — mesma
-penalização de [`bfgs_puro_penalizado`](@ref), sobre dados reais (não o
-experimento gêmeo de `bobyqa_puro_penalizado_pregerado`,
+Roda `NLopt.:LN_BOBYQA` sobre `0.5 * (sum(abs2, residual) + sv_box_penalty(x, lower, upper, penalty_weight))`,
+onde `residual = sv_fork_assimilation(x, tbeg, tend, nothing).erro` — mesmo
+objetivo (com o fator `0.5`) de [`bfgs_puro_penalizado`](@ref), sobre dados
+reais (não o experimento gêmeo de `bobyqa_puro_penalizado_pregerado`,
 `sv_teste_pregenered.jl`). Mesma configuração/formato de retorno dessa
-função irmã (ver sua docstring para detalhes).
+função irmã (ver sua docstring para detalhes), mais `accepted_points`: como
+BOBYQA não expõe internamente quais pontos avaliados sua região de
+confiança de fato aceitou, `accepted_points` guarda, como proxy, a
+subsequência dos pontos avaliados que bateram um novo recorde (valor menor
+que todos os anteriores), na ordem em que foram avaliados.
 """
 function bobyqa_puro_penalizado(
     x0::AbstractVector;
@@ -1949,15 +1988,19 @@ function bobyqa_puro_penalizado(
 
     function_evaluations = Ref(0)
     function_evaluation_time_seconds = Ref(0.0)
+    evaluated_points = Vector{Vector{Float64}}()
+    evaluated_values = Float64[]
 
     raw_residual(x) = sv_fork_assimilation(x, tbeg, tend, nothing).erro
-    pen_objective(x) = sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight)
+    pen_objective(x) = 0.5 * (sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight))
 
     function objective(x)
         start_ns = time_ns()
         value = pen_objective(x)
         function_evaluations[] += 1
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        push!(evaluated_points, copy(x))
+        push!(evaluated_values, Float64(value))
         return (isfinite(value)) ? value : oftype(value, Inf)
     end
 
@@ -1982,6 +2025,19 @@ function bobyqa_puro_penalizado(
     mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
         function_evaluation_time_seconds[] / function_evaluations[]
 
+    # BOBYQA (livre de derivada) não expõe quais pontos avaliados foram
+    # "aceitos" pela região de confiança interna — como proxy, guarda os
+    # pontos que bateram um novo recorde (valor menor que todos os
+    # anteriores) na ordem em que foram avaliados.
+    accepted_points = Vector{Vector{Float64}}()
+    best_value = Inf
+    for (xi, vi) in zip(evaluated_points, evaluated_values)
+        if vi < best_value
+            push!(accepted_points, xi)
+            best_value = vi
+        end
+    end
+
     return (;
         minimizer,
         minimum = minimum_value,
@@ -1994,6 +2050,7 @@ function bobyqa_puro_penalizado(
         execution_time_seconds,
         rejected_directions = 0,
         alphas = nothing,
+        accepted_points,
         solution = (; minimum_value, minimizer, status),
         u = minimizer,
         objective = minimum_value,

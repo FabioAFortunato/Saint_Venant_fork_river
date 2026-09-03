@@ -1075,6 +1075,215 @@ end
 
 
 
+  """
+      sv_fork_estacoes(ng, tbeg=0.0, tend=31.0)
+
+  Roda a mesma simulação de [`sv_fork_assimilation`](@ref) (mesmos `ng`,
+  `tbeg`, `tend`, sem estado inicial customizado) mas, em vez de devolver o
+  resíduo `erro = [zou; zinterior]` (a diferença simulado−observado),
+  devolve as séries brutas simuladas e observadas nas duas estações de
+  medição (`x=751` e `x=3256`), na mesma extração usada por `sv_plot`
+  (`zmeio`/`zmeiodata` para `x=751`, `zfinal`/`zdata` para `x=3256`) —
+  dados suficientes para reproduzir o estilo de figura de
+  `_research/ffjmfig12.png` (duas séries temporais empilhadas, uma por
+  estação, sobrepondo o ajuste do modelo aos dados observados) para
+  qualquer `ng` (ex.: o minimizador de um solver), não só para plotar
+  imediatamente como `sv_plot` faz.
+
+  Devolve `(; t, z751_sim, z751_obs, z3256_sim, z3256_obs, ok)`, com `t` em
+  dias (`televa` já dividido por segundos-por-dia, como em `sv_plot`) e
+  `ok = false` se a simulação divergiu antes de `tend` (nesse caso os
+  vetores retornados podem estar incompletos).
+  """
+  function sv_fork_estacoes(ng::AbstractVector{T}, tbeg = 0.0, tend = 31.0) where T<:Real
+    # variable
+      local alfa = 0.99 # termo de difusão artificial -  alfa = 1 é sem difusao
+      local ualfa = 1.0 - alfa
+      local xmax = 3256.0 # end point/station
+      local xmin = -39.0 # initial point/station
+      local dt = 1.0 #second(s)
+      local dx = (xmax-xmin)/(nx-1) #space discretization
+      local grav = 9.8 #gravitational constant
+      local x=0.0; zb = zeros(T, nx); z = zeros(T, nx); h = zeros(T, nx); av = zeros(T, nx)
+      local ancho = zeros(T, nx); a = zeros(T, nx); v = zeros(T, nx)
+      local t = 60.0*60.0*24.0*tbeg; ya = 0; imprim = 0.0
+      local televa = []; zfinal = []; zmeio = []; zfake = []; zmeiofake = []; zdata = []; zmeiodata = []
+      local at, avx; anew = zeros(T, nx); zhatx = zeros(T, nx); av2x = 0.0; peri=0.0
+      local avt = 0.0; eneg = 0.0; avnew = zeros(T, nx); vnew = zeros(T, nx); hnew = zeros(T, nx)
+      local tmix_aux = 60.0*60.0*24.0*max(3.0, tbeg) # seconds / min / hours / days We have data after day 3
+      local tmax = 0.0 + 60.0*0.0 + 60.0*60.0*0.0 + 60.0*60.0*24.0*tend
+      local continuar = true
+      local n_man = length(ng)
+      local idx_751 = clamp(round(Int, 1 + (751.0 - xmin)/dx), 1, nx)
+    # variable
+      for i = 1:nx
+          x = xmin + dx*(i-1)
+          zb[i] = zbfork(x)
+          z[i] = zfork(x)
+          h[i] = z[i] - zb[i]
+          av[i] = qinlet(t)
+          ancho[i] = anchofork(x)
+          a[i] = ancho[i]*h[i]
+          v[i] = av[i]/a[i]
+      end
+
+      while t <= tmax
+
+        #    Smoothing (igual a `sv_fork_assimilation`: suaviza só h/av e
+        #    recalcula z/a/v a partir deles, em vez de suavizar os cinco
+        #    campos independentemente como `sv_plot` fazia — isso quebra a
+        #    consistência z=h+zb, a=ancho*h, v=av/a e diverge muito mais
+        #    cedo para vários `ng`)
+          for i = 2:nx-1
+              h[i] = alfa*h[i] + ualfa*(h[i-1]+h[i+1])/2.0
+              av[i] = alfa*av[i] + ualfa*(av[i-1]+av[i+1])/2.0
+          end
+
+          for i = 1:nx
+              z[i] = h[i] + zb[i]
+              a[i] = ancho[i]*h[i]
+              v[i] = av[i]/a[i]
+          end
+
+        # End of Smoothing
+
+        #   Writing
+          imprim = tmix_aux + (ya)*timprim
+          if (t >= imprim)  && (t <= tmax)
+              ya = ya + 1
+              push!(televa, t)
+              if fake == 1
+                  z_3256 = zfinal_fake(t)
+                  z_751 = zmeio_fake(t)
+                  push!(zfinal, z[nx])
+                  push!(zmeio, z[idx_751])
+                  push!(zdata, z_3256)
+                  push!(zmeiodata, z_751)
+              else
+                  z_3256 = zoutlet(t)
+                  z_751 = zhistomedio(t)
+                  push!(zfinal, z[nx])
+                  push!(zmeio, z[idx_751])
+                  push!(zdata, z_3256)
+                  push!(zmeiodata, z_751)
+              end
+          end
+        # end Writing
+
+        t = t + dt
+
+        for i = 1:nx
+
+          #Consider the mass conservation equation
+          if i > 1 && i < nx
+              avx = (av[i+1] - av[i-1])/(2.0*dx)
+          end
+          if i == 1
+              avx = (av[i+1] - av[i])/(dx)
+          end
+          if i == nx
+              avx = (av[i] - av[i-1])/(dx)
+          end
+
+          at = - avx
+
+          anew[i] = a[i] + dt*at
+
+          if anew[i] < 0.0
+              continuar = false
+              break
+          end
+
+          # Consider the momentum conservation equation
+          if i > 1 && i < nx
+                  av2x =   (av[i+1]*v[i+1] - av[i-1]*v[i-1])/(2.0*dx)
+                  zhatx[i] = (z[i+1]-z[i-1])/(2.0*dx)
+          end
+          if i == 1
+                  av2x =   (av[i+1]*v[i+1] - av[i]*v[i])/(dx)
+                  zhatx[i] =  (z[i+1]-z[i])/(dx)
+          end
+          if i == nx
+                  av2x =   (av[i]*v[i] - av[i-1]*v[i-1])/(dx)
+                  zhatx[i] = (z[i]-z[i-1])/(dx)
+          end
+
+          zhatx[i] = zhatx[i] /(1.0 + zhatx[i]^2)
+          peri = ancho[i] + 2.0*h[i]
+
+          if n_man == 2
+              # Interpolação linear simples entre os dois extremos do canal
+              eneg = (1 - (i-1)/(nx-1)) * ng[1] + (i-1)/(nx-1) * ng[2]
+
+          elseif n_man == nx
+              # Atribuição direta: cada ponto da malha tem seu próprio n de Manning
+              eneg = ng[i]
+
+          elseif 2 < n_man < nx
+              # Interpolação linear segmentada (Piecewise Linear)
+              pos_ng = 1.0 + (i - 1) * (n_man - 1) / (nx - 1)
+              j = floor(Int, pos_ng)
+              j = clamp(j, 1, n_man - 1)
+              frac = pos_ng - j
+              eneg = (1.0 - frac) * ng[j] + frac * ng[j+1]
+
+          else
+              error("Wrong dimension. Please choose ng with size between 2 and nx")
+          end
+
+
+          rh3 = (a[i]/peri)^(4.0/3.0)
+          avt =-av2x-grav*a[i]*zhatx[i]-eneg^2*av[i]*sqrt(av[i]^2+1e-3)/(rh3*a[i])
+
+          avnew[i]  = av[i] + dt*avt
+
+          if isnan(avt)
+              continuar = false
+              break
+          end
+
+
+          if avnew[i]  == 0.0
+              vnew[i] = 0.0
+          else
+              vnew[i] = avnew[i]/anew[i]
+          end
+          hnew[i] = anew[i]/ancho[i]
+
+
+        end # end for (nx)
+
+        if !continuar
+          break  # sai do while
+        end
+
+        avnew[1] = qinlet(t)
+        vnew[1] = avnew[1]/anew[1]
+
+        for i = 1:nx
+              a[i] = anew[i]
+              v[i] = vnew[i]
+              h[i] = hnew[i]
+              av[i] = avnew[i]
+              z[i] = zb[i] + h[i]
+        end
+
+
+      end # end while (t)
+
+      televa = Float64.(televa) ./ (24.0*60*60)
+
+      return (;
+          t = televa,
+          z751_sim = Float64.(zmeio),
+          z751_obs = Float64.(zmeiodata),
+          z3256_sim = Float64.(zfinal),
+          z3256_obs = Float64.(zdata),
+          ok = continuar,
+      )
+  end
+
+
   function sv_plot(ng::AbstractVector{T}) where T<:Real
     # variable
       local alfa = 0.99 # termo de difusão artificial -  alfa = 1 é sem difusao
