@@ -2,6 +2,7 @@ using HypothesisTests
 using PGFPlotsX
 using Plots
 using Statistics
+import Contour  # curvas de nível calculadas na mão para pgfplotsx — ver `_desenha_curvas_nivel!` abaixo
 
 pgfplotsx()
 
@@ -367,6 +368,41 @@ end
 # mínimo marcado é só o empírico da grade.
 # ==============================================================================
 
+# Desenha curvas de nível "na mão" via `Contour.jl`, em vez do `contour!`/
+# `contourf` do Plots.jl: no backend `pgfplotsx()` (usado neste arquivo), o
+# recipe de contorno do Plots.jl não desenha as linhas de forma confiável
+# (vira um grid de blocos de cor só, sem contornos, mesmo com
+# `linecolor`/`linewidth`). Calculando as linhas com `Contour.jl` — a
+# biblioteca que o Plots.jl já usa por baixo dos panos para computar
+# contornos nos outros backends — e desenhando cada uma como uma série de
+# linha comum (`plot!`), o pgfplotsx sempre sabe renderizar (é só um
+# `\\addplot` simples). `Z` deve estar no formato de
+# `le_assimilation_heatmap_matrix`/`heatmap` (`size(Z) == (length(y),
+# length(x))`); é transposta aqui porque `Contour.jl` espera o formato
+# oposto (`Zt[i, j]` correspondendo a `x[i], y[j]`).
+function _desenha_curvas_nivel!(
+    p,
+    x::AbstractVector,
+    y::AbstractVector,
+    Z::AbstractMatrix;
+    niveis,
+    cor = :black,
+    largura::Real = 1.0,
+)
+    Zt = permutedims(Z)
+    curvas = Contour.contours(collect(x), collect(y), Zt, collect(niveis))
+
+    for nivel in Contour.levels(curvas)
+        for linha in Contour.lines(nivel)
+            xs, ys = Contour.coordinates(linha)
+            all(isfinite, xs) && all(isfinite, ys) || continue
+            plot!(p, xs, ys; color = cor, linewidth = largura, label = false)
+        end
+    end
+
+    return p
+end
+
 """
     plot_assimilation_rmsd_heatmap_pregerado(; matrix_output="results/assimilacao_heatmap_pregerado_tend_31.csv",
                                                  x_otimo, output="results/assimilacao_heatmap_pregerado_tend_31.pdf",
@@ -392,13 +428,15 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
     heat = le_assimilation_heatmap_matrix(matrix_output)
     Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
 
-    # `contourf` (em vez de `heatmap` + `contour!` sobreposto) porque, com o
-    # backend pgfplotsx, um `contour!` sobreposto a um `heatmap` no mesmo eixo
-    # não é confiável — ele frequentemente não desenha as linhas (dois tipos
-    # de `\addplot` distintos disputando o mesmo eixo). `contourf` já
-    # desenha as curvas de nível (como fronteiras entre as faixas de cor
-    # preenchidas) num único `\addplot`, então as linhas aparecem de fato.
-    p = contourf(
+    # Backend continua `pgfplotsx()` (global, topo do arquivo). O recipe de
+    # `contour!`/`contourf` do Plots.jl não é confiável nesse backend — as
+    # linhas de contorno simplesmente não aparecem (confirmado no PDF
+    # gerado: só o grid de cores, sem nenhuma curva). Em vez de trocar de
+    # backend, calculamos as curvas de nível "na mão" com `Contour.jl` (a
+    # mesma biblioteca que o Plots usa por baixo dos panos para os outros
+    # backends) e desenhamos cada uma como uma série de linha comum — um
+    # `\addplot` simples, que o pgfplotsx sempre renderiza direito.
+    p = heatmap(
         heat.n1,
         heat.n2,
         Z_plot;
@@ -406,9 +444,6 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         ylabel = "Manning coefficient x2",
         colorbar_title = "RMSD",
         clim = (0.0, rmsd_max),
-        levels = 12,
-        linewidth = 1.0,
-        linecolor = :black,
         aspect_ratio = :equal,
         xlims = (minimum(heat.n1), maximum(heat.n1)),
         ylims = (minimum(heat.n2), maximum(heat.n2)),
@@ -429,6 +464,8 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         markerstrokecolor = :black,
         label = "Yellow region = NaN",
     )
+
+    _desenha_curvas_nivel!(p, heat.n1, heat.n2, Z_plot; niveis = range(0.0, rmsd_max, length = 9))
 
     scatter!(
         p,
@@ -482,9 +519,10 @@ function plot_assimilation_rmsd_heatmap_pregerado_com_solvers(;
 )
     base = plot_assimilation_rmsd_heatmap_pregerado(; x_otimo, output, kwargs...)
     lidos = le_pontos_aceitos_solvers(pontos_csv)
-    # `base.plot` já vem com as curvas de nível desenhadas (`contourf`
-    # dentro de `plot_assimilation_rmsd_heatmap_pregerado`) — nenhum
-    # `contour!` adicional é necessário aqui.
+    # `base.plot` já vem com as curvas de nível desenhadas (via
+    # `_desenha_curvas_nivel!`, dentro de
+    # `plot_assimilation_rmsd_heatmap_pregerado`) — nenhum `contour!`
+    # adicional é necessário aqui.
 
     estilos = Dict(
         "BFGS" => (cor = :red, marcador = :circle),
