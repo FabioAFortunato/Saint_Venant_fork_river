@@ -365,6 +365,101 @@ function plot_assimilacao_heatmap_tend_31_latex_com_solvers(;
 end
 
 # ==============================================================================
+# Só o plot do heatmap "a priori" do experimento gêmeo (dimensão 2), a
+# partir do CSV já gerado por `assimilation_rmsd_heatmap_pregerado`
+# (`sv_teste_pregenered.jl`) — sem recalcular a grade (`le_assimilation_heatmap_matrix`,
+# `assimilacao.jl`, precisa estar carregado). Mesmo estilo visual de
+# `plot_assimilacao_heatmap_tend_31_latex` (`scripts/main.jl`), mas marca o
+# `x_otimo` VERDADEIRO com a estrela, já que no experimento gêmeo ele é
+# conhecido por construção — ao contrário do heatmap de dados reais, cujo
+# mínimo marcado é só o empírico da grade.
+# ==============================================================================
+
+"""
+    plot_assimilation_rmsd_heatmap_pregerado(; matrix_output="results/assimilacao_heatmap_pregerado_tend_31.csv",
+                                                 x_otimo, output="results/assimilacao_heatmap_pregerado_tend_31.pdf",
+                                                 rmsd_max=3.0, tamanho=(700,600))
+
+Plota o heatmap/curvas de nível de RMSD do CSV já gerado por
+`assimilation_rmsd_heatmap_pregerado`, sem rodar a varredura de novo.
+`x_otimo` é o ótimo verdadeiro usado para gerar aquele CSV (precisa ser
+passado aqui de novo, já que só o RMSD é salvo no CSV, não `x_otimo`) e é
+marcado com uma estrela branca. Salva em `output` e devolve `(; plot,
+output, data, x_otimo)`.
+"""
+function plot_assimilation_rmsd_heatmap_pregerado(;
+    matrix_output::AbstractString = "results/assimilacao_heatmap_pregerado_tend_31.csv",
+    x_otimo::AbstractVector,
+    output::AbstractString = "results/assimilacao_heatmap_pregerado_tend_31.pdf",
+    rmsd_max::Real = 3.0,
+    tamanho = (700, 600),
+)
+    length(x_otimo) == 2 ||
+        throw(ArgumentError("x_otimo deve ter dimensão 2 (grade 2D de n1 × n2)"))
+
+    heat = le_assimilation_heatmap_matrix(matrix_output)
+    Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
+
+    p = heatmap(
+        heat.n1,
+        heat.n2,
+        Z_plot;
+        xlabel = "Manning coefficient x1",
+        ylabel = "Manning coefficient x2",
+        colorbar_title = "RMSD",
+        clim = (0.0, rmsd_max),
+        aspect_ratio = :equal,
+        xlims = (minimum(heat.n1), maximum(heat.n1)),
+        ylims = (minimum(heat.n2), maximum(heat.n2)),
+        color = :viridis,
+        background_color = :white,
+        background_color_inside = :gold,
+        size = tamanho,
+        legend = :topleft,
+    )
+
+    scatter!(
+        p,
+        [NaN],
+        [NaN];
+        markershape = :rect,
+        markersize = 14,
+        markercolor = :gold,
+        markerstrokecolor = :black,
+        label = "Yellow region = NaN",
+    )
+
+    contour!(
+        p,
+        heat.n1,
+        heat.n2,
+        heat.RMSD;
+        linewidth = 1.2,
+        color = :black,
+        labels = false,
+        levels = 8,
+    )
+
+    scatter!(
+        p,
+        [x_otimo[1]],
+        [x_otimo[2]];
+        marker = :star5,
+        markersize = 10,
+        markercolor = :white,
+        markerstrokecolor = :black,
+        markerstrokewidth = 1.5,
+        label = "x_otimo = ($(round(x_otimo[1], digits=4)), $(round(x_otimo[2], digits=4)))",
+    )
+
+    mkpath(dirname(output))
+    savefig(p, output)
+    println("Heatmap do experimento gêmeo salvo em: $output")
+
+    return (; plot = p, output, data = heat, x_otimo)
+end
+
+# ==============================================================================
 # Custo computacional (segundos) de avaliar o gradiente e a Hessiana de
 # F_residual por ForwardDiff, em função da dimensão de entrada — dados
 # gerados por `benchmark_forwarddiff_sv` (`ffjm2.jl`), CSV com colunas

@@ -1157,9 +1157,9 @@ function comparar_solvers_pregerado(
                     r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
                     accepted_points)
         end),
-        # ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
-        #     x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
-        # )),
+         ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
+             x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
+         )),
         ("ffjm2", function ()
             external_evaluations = Ref(0)
             counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
