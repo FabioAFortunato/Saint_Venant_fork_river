@@ -276,7 +276,15 @@ function plot_assimilacao_heatmap_tend_31_latex(;
     rmsd_min = heat.RMSD[min_idx]
     Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
 
-    p = Plots.heatmap(
+    # `contourf` (em vez de `heatmap` + `contour!` sobreposto): além do
+    # `contour!` sobreposto ser pouco confiável para desenhar linhas junto
+    # de um `heatmap` no mesmo eixo, os níveis de `heat.RMSD` (sem o corte
+    # em `rmsd_max`) tendem a se concentrar nos poucos pontos com RMSD muito
+    # alto (ex.: solver divergiu), deixando quase nenhum nível dentro da
+    # faixa `[0, rmsd_max]` realmente visível no heatmap — por isso viam-se
+    # só 1-2 curvas. Usar `Z_plot` (já saturado em `rmsd_max`) com níveis
+    # igualmente espaçados nessa faixa resolve os dois problemas de uma vez.
+    p = Plots.contourf(
         heat.n1,
         heat.n2,
         Z_plot;
@@ -284,6 +292,9 @@ function plot_assimilacao_heatmap_tend_31_latex(;
         ylabel = "Manning coefficient x2",
         colorbar_title = L"\mathrm{RMSD}",
         clim = (0.0, rmsd_max),
+        levels = range(0.0, rmsd_max, length = 13),
+        linewidth = 1.0,
+        linecolor = :black,
         aspect_ratio = :equal,
         xlims = (minimum(heat.n1), maximum(heat.n1)),
         ylims = (minimum(heat.n2), maximum(heat.n2)),
@@ -303,17 +314,6 @@ function plot_assimilacao_heatmap_tend_31_latex(;
         markercolor = :gold,
         markerstrokecolor = :black,
         label = "Yellow region = NaN",
-    )
-
-    Plots.contour!(
-        p,
-        heat.n1,
-        heat.n2,
-        heat.RMSD;
-        linewidth = 1.2,
-        color = :black,
-        labels = false,
-        levels = 8,
     )
 
     Plots.scatter!(

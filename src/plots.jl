@@ -285,17 +285,9 @@ function plot_assimilacao_heatmap_tend_31_latex_com_solvers(;
 )
     base = plot_assimilacao_heatmap_tend_31_latex(; output, kwargs...)
     lidos = le_pontos_aceitos_solvers(pontos_csv)
-
-    contour!(
-        base.plot,
-        base.data.n1,
-        base.data.n2,
-        base.data.RMSD;
-        linewidth = 1.2,
-        color = :black,
-        labels = false,
-        levels = 8,
-    )
+    # `base.plot` já vem com as curvas de nível desenhadas (`contourf`
+    # dentro de `plot_assimilacao_heatmap_tend_31_latex`) — nenhum
+    # `contour!` adicional é necessário aqui.
 
     estilos = Dict(
         "BFGS" => (cor = :red, marcador = :circle),
