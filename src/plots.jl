@@ -465,7 +465,7 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         label = "Yellow region = NaN",
     )
 
-    _desenha_curvas_nivel!(p, heat.n1, heat.n2, Z_plot; niveis = range(0.0, rmsd_max, length = 9))
+    _desenha_curvas_nivel!(p, heat.n1, heat.n2, Z_plot; niveis = range(0.0, rmsd_max, length = 20))
 
     scatter!(
         p,
