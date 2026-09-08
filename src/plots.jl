@@ -400,7 +400,13 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
     heat = le_assimilation_heatmap_matrix(matrix_output)
     Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
 
-    p = heatmap(
+    # `contourf` (em vez de `heatmap` + `contour!` sobreposto) porque, com o
+    # backend pgfplotsx, um `contour!` sobreposto a um `heatmap` no mesmo eixo
+    # não é confiável — ele frequentemente não desenha as linhas (dois tipos
+    # de `\addplot` distintos disputando o mesmo eixo). `contourf` já
+    # desenha as curvas de nível (como fronteiras entre as faixas de cor
+    # preenchidas) num único `\addplot`, então as linhas aparecem de fato.
+    p = contourf(
         heat.n1,
         heat.n2,
         Z_plot;
@@ -408,6 +414,9 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         ylabel = "Manning coefficient x2",
         colorbar_title = "RMSD",
         clim = (0.0, rmsd_max),
+        levels = 12,
+        linewidth = 1.0,
+        linecolor = :black,
         aspect_ratio = :equal,
         xlims = (minimum(heat.n1), maximum(heat.n1)),
         ylims = (minimum(heat.n2), maximum(heat.n2)),
@@ -427,17 +436,6 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         markercolor = :gold,
         markerstrokecolor = :black,
         label = "Yellow region = NaN",
-    )
-
-    contour!(
-        p,
-        heat.n1,
-        heat.n2,
-        heat.RMSD;
-        linewidth = 1.2,
-        color = :black,
-        labels = false,
-        levels = 8,
     )
 
     scatter!(
@@ -492,17 +490,9 @@ function plot_assimilation_rmsd_heatmap_pregerado_com_solvers(;
 )
     base = plot_assimilation_rmsd_heatmap_pregerado(; x_otimo, output, kwargs...)
     lidos = le_pontos_aceitos_solvers(pontos_csv)
-
-    contour!(
-        base.plot,
-        base.data.n1,
-        base.data.n2,
-        base.data.RMSD;
-        linewidth = 1.2,
-        color = :black,
-        labels = false,
-        levels = 8,
-    )
+    # `base.plot` já vem com as curvas de nível desenhadas (`contourf`
+    # dentro de `plot_assimilation_rmsd_heatmap_pregerado`) — nenhum
+    # `contour!` adicional é necessário aqui.
 
     estilos = Dict(
         "BFGS" => (cor = :red, marcador = :circle),
