@@ -419,7 +419,7 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
     matrix_output::AbstractString = "results/assimilacao_heatmap_pregerado_tend_31.csv",
     x_otimo::AbstractVector,
     output::AbstractString = "results/assimilacao_heatmap_pregerado_tend_31.pdf",
-    rmsd_max::Real = 3.0,
+    rmsd_max::Real = 1.0,
     tamanho = (700, 600),
 )
     length(x_otimo) == 2 ||
