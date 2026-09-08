@@ -460,6 +460,118 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
 end
 
 # ==============================================================================
+# Igual a `plot_assimilacao_heatmap_tend_31_latex_com_solvers` acima, mas para
+# o experimento gêmeo (dados sintéticos): sobrepõe, no heatmap de
+# `plot_assimilation_rmsd_heatmap_pregerado`, o caminho de pontos aceitos de
+# cada solver (BFGS, BOBYQA, ffjm2), lido do CSV `method,point_index,x`
+# gerado por `comparar_solvers_pregerado`/`comparar_solvers_twin_dim2`
+# (`sv_teste_pregenered.jl`). Assume dimensão 2, como o heatmap de fundo.
+# ==============================================================================
+
+"""
+    plot_assimilation_rmsd_heatmap_pregerado_com_solvers(; x_otimo, pontos_csv, output, kwargs...)
+
+Plota o caminho de pontos aceitos de cada solver (BFGS, BOBYQA, ffjm2) sobre
+o heatmap/curvas de nível de RMSD do experimento gêmeo de
+`plot_assimilation_rmsd_heatmap_pregerado`, lidos de `pontos_csv` (formato
+`method,point_index,x` gerado por `comparar_solvers_pregerado`,
+`sv_teste_pregenered.jl`, tipicamente
+`results/comparacao_solvers_twin_dim2_pontos.csv`). `x_otimo` é o ótimo
+verdadeiro usado para gerar o heatmap/os dados sintéticos (mesmo valor
+passado a `assimilation_rmsd_heatmap_pregerado`/`comparar_solvers_twin_dim2`)
+e é marcado com uma estrela branca pelo heatmap de base. Salva em `output`
+(padrão `results/plot_calor_pregerado_com_solvers.pdf`). `kwargs...` são
+repassados a `plot_assimilation_rmsd_heatmap_pregerado` (`matrix_output`,
+`rmsd_max`, `tamanho`).
+"""
+function plot_assimilation_rmsd_heatmap_pregerado_com_solvers(;
+    x_otimo::AbstractVector,
+    pontos_csv = "results/comparacao_solvers_twin_dim2_pontos.csv",
+    output = "results/plot_calor_pregerado_com_solvers.pdf",
+    kwargs...,
+)
+    base = plot_assimilation_rmsd_heatmap_pregerado(; x_otimo, output, kwargs...)
+    lidos = le_pontos_aceitos_solvers(pontos_csv)
+
+    contour!(
+        base.plot,
+        base.data.n1,
+        base.data.n2,
+        base.data.RMSD;
+        linewidth = 1.2,
+        color = :black,
+        labels = false,
+        levels = 8,
+    )
+
+    estilos = Dict(
+        "BFGS" => (cor = :red, marcador = :circle),
+        "BOBYQA" => (cor = :blue, marcador = :diamond),
+        "ffjm2" => (cor = :green, marcador = :utriangle),
+    )
+    cores_extra = [:orange, :purple, :brown, :gray]
+
+    caminhos = NamedTuple[]
+    for (j, metodo) in enumerate(lidos.metodos)
+        pontos = lidos.pontos_por_metodo[metodo]
+        if isempty(pontos)
+            @warn "Sem pontos aceitos para $metodo; ignorando." pontos_csv
+            continue
+        end
+
+        estilo = get(estilos, metodo, (cor = cores_extra[mod1(j, length(cores_extra))], marcador = :hexagon))
+        xs = [p[1] for p in pontos]
+        ys = [p[2] for p in pontos]
+
+        plot!(
+            base.plot,
+            xs,
+            ys;
+            color = estilo.cor,
+            linewidth = 2,
+            marker = estilo.marcador,
+            markersize = 4,
+            markercolor = estilo.cor,
+            markerstrokecolor = :white,
+            label = "$metodo path",
+        )
+
+        scatter!(
+            base.plot,
+            [xs[1]],
+            [ys[1]];
+            marker = :diamond,
+            markersize = 6,
+            markercolor = :white,
+            markerstrokecolor = estilo.cor,
+            markerstrokewidth = 1.5,
+            label = false,
+        )
+
+        scatter!(
+            base.plot,
+            [xs[end]],
+            [ys[end]];
+            marker = :star5,
+            markersize = 8,
+            markercolor = estilo.cor,
+            markerstrokecolor = :white,
+            markerstrokewidth = 1.5,
+            label = false,
+        )
+
+        push!(caminhos, (; metodo, x = xs, y = ys))
+    end
+
+    isempty(caminhos) && @warn "Nenhum caminho de solver foi plotado." pontos_csv
+
+    mkpath(dirname(output))
+    savefig(base.plot, output)
+
+    return merge(base, (; output, pontos_csv, caminhos))
+end
+
+# ==============================================================================
 # Custo computacional (segundos) de avaliar o gradiente e a Hessiana de
 # F_residual por ForwardDiff, em função da dimensão de entrada — dados
 # gerados por `benchmark_forwarddiff_sv` (`ffjm2.jl`), CSV com colunas
