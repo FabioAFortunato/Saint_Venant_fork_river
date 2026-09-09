@@ -1593,7 +1593,6 @@ end
 
 
 function excluir_depois()
-    comparar_solvers_real_dim10()
     comparar_solvers_twin_dim10()
     return 10
 end

@@ -271,7 +271,7 @@ function ffjm2(
     mu_initial::Real = 1.0,
     mu_grow::Real = 10.0,
     mu_min::Real = 1e-8,
-    mu_max::Real = 1e10,
+    mu_max::Real = 1e11,
     ratio_eta1::Real = 0.01,
     max_mu_increases::Integer = 10,
     divergence_reduction_threshold::Real = -Inf,

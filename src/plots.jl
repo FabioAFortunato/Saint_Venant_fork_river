@@ -230,6 +230,239 @@ function boxplot_ffjm2_vs_bfgs_mgh(;
 end
 
 # ==============================================================================
+# Performance profile (Dolan & Moré, 2002) comparando dois métodos nos
+# problemas MGH — mesma fonte de dados/formato de CSV de
+# `boxplot_ffjm2_vs_bfgs_mgh` (`_read_mgh_csv`, colunas de
+# `comparar_ffjm2_bfgs_mgh`/`comparar_ffjm2_modelos_mgh`, `src/teste.jl`).
+#
+# Para cada problema p, t_{p,s} é a métrica de custo (`metric`, padrão
+# `function_evaluations`) do método s; problemas em que o método não
+# convergiu (`converged == false`) contam como falha (t_{p,s} = Inf, nunca
+# entra no perfil). r_{p,s} = t_{p,s} / min(t_{p,BFGS}, t_{p,ffjm2}) é a
+# razão pro melhor dos dois métodos naquele problema (sempre ≥ 1). O perfil
+# ρ_s(τ) = fração dos problemas com r_{p,s} ≤ τ é uma função em escada:
+# ρ_s(1) é a fração de problemas em que s foi o melhor (ou empatou), e
+# ρ_s(τ) no τ máximo tende à taxa de convergência de s. Sem pacote externo
+# de performance profile no projeto, a curva é construída manualmente
+# amostrando ρ_s num grid fino de τ (log-espaçado) e desenhando como função
+# em escada (`seriestype=:steppost`), igual à abordagem "sem StatsPlots"
+# já usada em `_boxplot_panel`.
+# ==============================================================================
+
+# Núcleo do cálculo de um performance profile para UMA métrica: monta t_a/t_b
+# (custo por problema, Inf se o método não "convergiu" segundo `status_filter`),
+# a razão r = t/melhor (r=1 quando os dois empatam em 0, Inf se o vencedor
+# "ganhou por zero" e o outro não — caso raro mas possível com `metric=:f`,
+# onde o custo pode ser exatamente 0), e amostra ρ_s(τ) num grid log-espaçado
+# de τ. Compartilhado por `performance_profile_ffjm2_vs_bfgs_mgh` (um painel)
+# e `performance_profiles_ffjm2_vs_bfgs_mgh` (três painéis, uma métrica cada).
+#
+# `status_filter` decide o que conta como sucesso: uma string (ex.
+# `"gradient_converged"`, o padrão, igual a `boxplot_ffjm2_vs_bfgs_mgh`)
+# exige esse `status` exato; `nothing` aceita qualquer `converged == true`.
+# A diferença importa de verdade: no CSV padrão, BFGS tem `converged=true`
+# em 34/34 problemas, mas só 32/34 têm `status == "gradient_converged"` —
+# MGH10 parou por `step_converged` e MGH16 por `function_converged`, nenhum
+# dos dois uma certificação real de estacionariedade. Contar os três como
+# sucesso infla artificialmente a taxa de convergência "de verdade" do
+# BFGS no perfil.
+function _performance_profile_curve(
+    dict_a, dict_b, problems, metric::Symbol, tau_max::Real,
+    status_filter::Union{AbstractString,Nothing},
+)
+    success(row) = status_filter === nothing ? row.converged : row.status == status_filter
+    cost(row) = success(row) ? Float64(getproperty(row, metric)) : Inf
+
+    t_a = [cost(dict_a[p]) for p in problems]
+    t_b = [cost(dict_b[p]) for p in problems]
+    best = min.(t_a, t_b)
+
+    # Problema em que nenhum dos dois teve sucesso (best=Inf): falha mútua,
+    # os dois ficam com razão infinita (nunca cruzam nenhum τ finito), em vez
+    # de erro — o problema continua contando no denominador de ambos os
+    # perfis (convenção usual de Dolan-Moré: o total de problemas é fixo).
+    ratio(t, b) = !isfinite(b) ? Inf : (b == 0 ? (t == 0 ? 1.0 : Inf) : t / b)
+    r_a = ratio.(t_a, best)
+    r_b = ratio.(t_b, best)
+
+    rho(r, taus) = [count(x -> isfinite(x) && x <= tau, r) / length(r) for tau in taus]
+    taus = exp.(range(0.0, log(tau_max), length = 400))
+    log2_taus = log2.(taus)
+
+    return (; log2_taus, rho_a = rho(r_a, taus), rho_b = rho(r_b, taus), r_a, r_b)
+end
+
+"""
+    performance_profile_ffjm2_vs_bfgs_mgh(; rows=nothing, csv_path="results/sr1_comparacao_ffjm2_bfgs_mgh.csv",
+                                              method_a="ffjm2_psb", method_b="bfgs_backtracking2",
+                                              label_a="FFJM2 (PSB)", label_b="BFGS (backtracking)",
+                                              metric=:function_evaluations, tau_max=32.0,
+                                              output="results/performance_profile_ffjm2_vs_bfgs_mgh.png")
+
+Performance profile de Dolan e Moré comparando `method_a` e `method_b`
+(colunas `method` do CSV MGH) nos problemas em comum entre os dois. `metric`
+é o campo usado como custo por problema — qualquer coluna numérica de
+`_read_mgh_csv` (`:function_evaluations` por padrão; também úteis:
+`:gradient_evaluations`, `:iterations`, `:execution_time_seconds`, ou `:f`
+para comparar a qualidade da solução em vez do custo — ver
+[`performance_profiles_ffjm2_vs_bfgs_mgh`](@ref) para função/gradiente de uma vez).
+`status_filter` (padrão `"gradient_converged"`, igual a
+[`boxplot_ffjm2_vs_bfgs_mgh`](@ref)) decide o que conta como sucesso: uma
+`String` exige esse `status` exato; `nothing` aceita qualquer `converged ==
+true`, mais permissivo (ex.: BFGS pode ter `converged=true` com `status ==
+"step_converged"`/`"function_converged"`, que não certificam
+estacionariedade — usar `status_filter=nothing` conta esses como sucesso).
+Um problema em que o método não teve sucesso conta como falha (custo
+infinito) nesse problema — nunca é o melhor, e nunca ultrapassa `τ_max` no
+perfil, mesmo com `metric=:f` (um `f` pequeno de uma execução sem sucesso
+não conta). Um problema em que NENHUM dos dois teve sucesso (possível com
+`status_filter` estrito: no CSV padrão, com `"gradient_converged"`, isso
+acontece em MGH10 e MGH16, onde os dois só passam por critérios mais
+fracos) conta como falha mútua para os dois, sem gerar erro — o problema
+continua no denominador de ambos os perfis (convenção usual de Dolan-Moré),
+só nunca é ultrapassado por nenhum dos dois em nenhum `τ` finito.
+
+O eixo horizontal é `log2(τ)` (convenção original de Dolan-Moré), não `τ`
+em escala log via `xscale` do Plots.jl, para não depender de suporte a
+escala log2 de um backend específico. `τ_max` (padrão `32`, i.e.
+`log2(τ_max)=5`) deve ser grande o suficiente para os dois métodos
+atingirem seu patamar (a fração de problemas convergidos); aumente se as
+curvas ainda estiverem subindo na borda direita do gráfico.
+
+Não computa nada: os dados vêm de `rows` (vetor de `NamedTuple`s) ou
+`csv_path` (mesmo formato de [`boxplot_ffjm2_vs_bfgs_mgh`](@ref); é erro não
+passar nenhum dos dois). Salva a figura em `output` (`nothing` para não
+salvar) e devolve `(; plot, taus, rho_a, rho_b, r_a, r_b, problems, metric)`.
+"""
+function performance_profile_ffjm2_vs_bfgs_mgh(;
+    rows = nothing,
+    csv_path::Union{AbstractString,Nothing} = "results/sr1_comparacao_ffjm2_bfgs_mgh.csv",
+    method_a::AbstractString = "ffjm2_psb",
+    method_b::AbstractString = "bfgs_backtracking2",
+    label_a::AbstractString = "FFJM2 (PSB)",
+    label_b::AbstractString = "BFGS (backtracking)",
+    metric::Symbol = :function_evaluations,
+    status_filter::Union{AbstractString,Nothing} = "gradient_converged",
+    tau_max::Real = 32.0,
+    output::Union{AbstractString,Nothing} = "results/performance_profile_ffjm2_vs_bfgs_mgh.png",
+)
+    if rows === nothing
+        csv_path === nothing && error("Informe `rows` (resultados já calculados) ou `csv_path` (CSV com esses resultados).")
+        rows = _read_mgh_csv(csv_path)
+    end
+
+    rows_a = filter(r -> r.method == method_a, rows)
+    rows_b = filter(r -> r.method == method_b, rows)
+    isempty(rows_a) && error("Nenhuma linha de method == \"$method_a\"")
+    isempty(rows_b) && error("Nenhuma linha de method == \"$method_b\"")
+
+    dict_a = Dict(r.problem => r for r in rows_a)
+    dict_b = Dict(r.problem => r for r in rows_b)
+    problems = sort(collect(intersect(Set(keys(dict_a)), Set(keys(dict_b)))))
+    isempty(problems) && error("Nenhum problema em comum entre \"$method_a\" e \"$method_b\".")
+
+    curve = _performance_profile_curve(dict_a, dict_b, problems, metric, tau_max, status_filter)
+
+    p = plot(
+        curve.log2_taus, curve.rho_a;
+        seriestype = :steppost,
+        xlabel = "log2(τ)",
+        ylabel = "P(r ≤ τ)",
+        label = label_a,
+        linewidth = 2,
+        legend = :bottomright,
+        ylims = (0, 1.02),
+    )
+    plot!(p, curve.log2_taus, curve.rho_b; seriestype = :steppost, label = label_b, linewidth = 2)
+
+    if output !== nothing
+        mkpath(dirname(output))
+        savefig(p, output)
+        println("Performance profile salvo em: $output")
+    end
+
+    return (; plot = p, taus = 2.0 .^ curve.log2_taus, curve.rho_a, curve.rho_b, curve.r_a, curve.r_b, problems, metric)
+end
+
+"""
+    performance_profiles_ffjm2_vs_bfgs_mgh(; rows=nothing, csv_path="results/sr1_comparacao_ffjm2_bfgs_mgh.csv",
+                                               method_a="ffjm2_psb", method_b="bfgs_backtracking2",
+                                               label_a="FFJM2 (PSB)", label_b="BFGS (backtracking)",
+                                               tau_max=32.0,
+                                               output="results/performance_profiles_ffjm2_vs_bfgs_mgh.png")
+
+Mesma ideia de [`performance_profile_ffjm2_vs_bfgs_mgh`](@ref) (mesmo
+`status_filter`, padrão `"gradient_converged"` — ver sua docstring), mas
+gera as três curvas de uma vez, uma por painel (`layout=(1,3)`, mesmo
+esquema de `boxplot_ffjm2_vs_bfgs_mgh`): valor final de `f` (qualidade da
+solução, não custo), avaliações de função e avaliações de gradiente,
+nessa ordem. `τ_max` é compartilhado pelas três; o painel de `f` tende a
+não atingir seu patamar com o `τ_max` padrão (`32`), já que os valores de
+`f` convergidos variam em ordens de grandeza muito maiores do que
+contagens de avaliações (ver a nota na docstring da função de painel
+único) — aumente `τ_max` ou chame `performance_profile_ffjm2_vs_bfgs_mgh(metric=:f, tau_max=...)`
+isoladamente se quiser ver esse painel saturar.
+
+Devolve `(; plot, curves)`, onde `curves` é um `NamedTuple` com uma entrada
+por métrica (`f`, `function_evaluations`, `gradient_evaluations`), cada
+uma com os mesmos campos de retorno da função de painel único (exceto
+`plot`).
+"""
+function performance_profiles_ffjm2_vs_bfgs_mgh(;
+    rows = nothing,
+    csv_path::Union{AbstractString,Nothing} = "results/sr1_comparacao_ffjm2_bfgs_mgh.csv",
+    method_a::AbstractString = "ffjm2_psb",
+    method_b::AbstractString = "bfgs_backtracking2",
+    label_a::AbstractString = "FFJM2 (PSB)",
+    label_b::AbstractString = "BFGS (backtracking)",
+    status_filter::Union{AbstractString,Nothing} = "gradient_converged",
+    tau_max::Real = 32.0,
+    output::Union{AbstractString,Nothing} = "results/performance_profiles_ffjm2_vs_bfgs_mgh.png",
+)
+    if rows === nothing
+        csv_path === nothing && error("Informe `rows` (resultados já calculados) ou `csv_path` (CSV com esses resultados).")
+        rows = _read_mgh_csv(csv_path)
+    end
+
+    rows_a = filter(r -> r.method == method_a, rows)
+    rows_b = filter(r -> r.method == method_b, rows)
+    isempty(rows_a) && error("Nenhuma linha de method == \"$method_a\"")
+    isempty(rows_b) && error("Nenhuma linha de method == \"$method_b\"")
+
+    dict_a = Dict(r.problem => r for r in rows_a)
+    dict_b = Dict(r.problem => r for r in rows_b)
+    problems = sort(collect(intersect(Set(keys(dict_a)), Set(keys(dict_b)))))
+    isempty(problems) && error("Nenhum problema em comum entre \"$method_a\" e \"$method_b\".")
+
+    metrics = (:f, :function_evaluations, :gradient_evaluations)
+    titles = ("Objective value f", "Function evaluations", "Gradient evaluations")
+
+    curves = NamedTuple[]
+    panels = map(zip(metrics, titles)) do (metric, title)
+        curve = _performance_profile_curve(dict_a, dict_b, problems, metric, tau_max, status_filter)
+        push!(curves, (; metric, curve...))
+
+        panel = plot(
+            curve.log2_taus, curve.rho_a;
+            seriestype = :steppost, title, xlabel = "log2(τ)", ylabel = "P(r ≤ τ)",
+            label = label_a, linewidth = 2, legend = :bottomright, ylims = (0, 1.02),
+        )
+        plot!(panel, curve.log2_taus, curve.rho_b; seriestype = :steppost, label = label_b, linewidth = 2)
+        panel
+    end
+
+    fig = plot(panels...; layout = (1, 3), size = (1500, 450), margin = 5Plots.mm)
+
+    if output !== nothing
+        mkpath(dirname(output))
+        savefig(fig, output)
+        println("Performance profiles salvos em: $output")
+    end
+
+    return (; plot = fig, curves = Tuple(curves), problems)
+end
+
+# ==============================================================================
 # Sobrepõe, no heatmap de RMSD de `plot_assimilacao_heatmap_tend_31_latex`
 # (`scripts/main.jl` — precisa estar carregado para as duas funções abaixo
 # funcionarem, já que constrói o fundo heatmap/curvas de nível), o caminho de
@@ -553,7 +786,7 @@ function plot_assimilation_rmsd_heatmap_pregerado_com_solvers(;
             markersize = 4,
             markercolor = estilo.cor,
             markerstrokecolor = :white,
-            label = "$metodo",
+            label = "$metodo path",
         )
 
         scatter!(
