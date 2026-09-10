@@ -1136,6 +1136,7 @@ function comparar_solvers_pregerado(
     rhobeg::Real = 0.01,
     rhoend::Real = 1e-6,
     ffjm2_maxiter::Integer = 500,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
     ffjm2_options = (;),
     show_trace::Bool = true,
 )
@@ -1166,7 +1167,7 @@ function comparar_solvers_pregerado(
             accepted_points = Vector{Vector{Float64}}()
             track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
             r = ffjm2(
-                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                counted_residual, x0; update, maxiter = ffjm2_maxiter, g_tol, show_trace,
                 callback = track_accepted, ffjm2_options...,
             )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
@@ -1216,6 +1217,7 @@ function comparar_solvers_real(
     rhobeg::Real = 0.01,
     rhoend::Real = 1e-6,
     ffjm2_maxiter::Integer = 500,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
     ffjm2_options = (;),
     show_trace::Bool = true,
 )
@@ -1236,7 +1238,7 @@ function comparar_solvers_real(
             accepted_points = Vector{Vector{Float64}}()
             track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
             r = ffjm2(
-                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                counted_residual, x0; update, maxiter = ffjm2_maxiter, g_tol, show_trace,
                 callback = track_accepted, ffjm2_options...,
             )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
@@ -1515,7 +1517,8 @@ end
 """
     rodar_ffjm2_quatro_cenarios(; tbeg=0.0, tend=31.0, ffjm2_maxiter=500,
                                    g_tol=1e-3, update=:psb, show_trace=true,
-                                   ffjm2_options=(;))
+                                   ffjm2_options=(;),
+                                   output="results/ffjm2_quatro_cenarios.csv")
 
 Roda só o `ffjm2` nos 4 cenários de parâmetro das tabelas de comparação —
 twin dim 2 (`x_otimo=[0.2,0.15]`), twin dim 10 (`x_otimo` decrescente de
@@ -1524,11 +1527,20 @@ em todos) — com os mesmos valores usados pelos presets
 `comparar_solvers_twin_dim2`/`comparar_solvers_twin_dim10`/
 `comparar_solvers_real_dim10` (o cenário "real dim3" não tem mais preset
 correspondente, ver comentário acima). Não roda BFGS
-nem BOBYQA. Devolve um `Vector` de `NamedTuple`s (`cenario`, `dimension`,
-`minimizer`, `rmsd`, `f`, `gradient_norm`, `function_evaluations`,
-`gradient_evaluations`, `execution_time_seconds`, `converged`, `status`) e
-imprime um resumo por cenário, no mesmo conjunto de métricas das tabelas do
-`.tex` (RMSD, `f`, `||grad f||`, Func./Grad. evals, tempo, status).
+nem BOBYQA.
+
+Salva uma linha por cenário em `output` (`nothing` para não salvar; CSV com
+cabeçalho `cenario,dimension,RMSD,gradient_norm,execution_time_seconds,
+function_evaluations,gradient_evaluations,converged,status,f_x,minimizer`,
+mesmo formato de coluna usado por `_comparar_solvers`), escrita
+incrementalmente (uma linha por vez, com `flush`) — cada cenário já fica
+salvo assim que termina, sem depender dos outros três (dados reais em
+dimensão 10 sozinho já levou mais de 8h numa corrida anterior). Devolve um
+`Vector` de `NamedTuple`s (`cenario`, `dimension`, `minimizer`, `rmsd`,
+`f`, `gradient_norm`, `function_evaluations`, `gradient_evaluations`,
+`execution_time_seconds`, `converged`, `status`) e imprime um resumo por
+cenário, no mesmo conjunto de métricas das tabelas do `.tex` (RMSD, `f`,
+`||grad f||`, Func./Grad. evals, tempo, status).
 """
 function rodar_ffjm2_quatro_cenarios(;
     tbeg::Real = 0.0,
@@ -1538,58 +1550,126 @@ function rodar_ffjm2_quatro_cenarios(;
     update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
     show_trace::Bool = true,
     ffjm2_options = (;),
+    output::Union{AbstractString,Nothing} = normpath(joinpath(@__DIR__, "..", "results", "ffjm2_quatro_cenarios.csv")),
 )
+    csv_field(value) = begin
+        text = value isa AbstractVector ? repr(collect(value)) : string(value)
+        occursin(r"[,\"\n\r]", text) ? "\"$(replace(text, '\"' => "\"\""))\"" : text
+    end
+    header = (
+        "cenario", "dimension", "RMSD", "gradient_norm", "execution_time_seconds",
+        "function_evaluations", "gradient_evaluations", "converged", "status", "f_x", "minimizer",
+    )
+
     cenarios = (
-        (nome = "twin dim2", tipo = :twin, x_otimo = [0.2, 0.15], x0 = fill(0.09, 2)),
-        (nome = "twin dim10", tipo = :twin, x_otimo = collect(range(0.12, 0.07, length = 10)), x0 = fill(0.09, 10)),
-        (nome = "real dim3", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 3)),
-        (nome = "real dim10", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 10)),
+        (nome = "twin dim2", tipo = :twin, x_otimo = [0.2, 0.15], x0 = fill(0.25, 2)),
+        (nome = "twin dim10", tipo = :twin, x_otimo = collect(range(0.12, 0.07, length = 10)), x0 = fill(0.25, 10)),
+        (nome = "real dim2", tipo = :real, x_otimo = nothing, x0 = fill(0.25, 2)),
+        (nome = "real dim10", tipo = :real, x_otimo = nothing, x0 = fill(0.25, 10)),
     )
 
     resultados = NamedTuple[]
-    for cenario in cenarios
-        println("\n=== ffjm2: $(cenario.nome) ===")
-        x0 = collect(float.(cenario.x0))
-
-        raw_residual = if cenario.tipo === :real
-            (x -> sv_fork_assimilation(x, tbeg, tend, nothing).erro)
-        else
-            dados_pregerados = sv_fork_dados_pregerados(cenario.x_otimo, tbeg, tend)
-            (x -> sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro)
-        end
-
-        r = ffjm2(raw_residual, x0; update, maxiter = ffjm2_maxiter, g_tol, show_trace, ffjm2_options...)
-
-        residual_final = collect(raw_residual(r.minimizer))
-        rmsd = norm(residual_final) / sqrt(length(residual_final))
-        status = string(r.status)
-
-        resultado = (;
-            cenario = cenario.nome,
-            dimension = length(x0),
-            minimizer = copy(r.minimizer),
-            rmsd,
-            f = r.minimum,
-            gradient_norm = norm(r.gradient),
-            function_evaluations = r.function_evaluations,
-            gradient_evaluations = r.gradient_evaluations,
-            execution_time_seconds = r.execution_time_seconds,
-            converged = r.converged,
-            status,
-        )
-        push!(resultados, resultado)
-
-        @printf(
-            "ffjm2 (%s): RMSD=%.3e  f=%.4f  ||grad||=%.3e  fevals=%d  gevals=%d  tempo=%.1fs  status=%s\n",
-            cenario.nome, rmsd, r.minimum, norm(r.gradient),
-            r.function_evaluations, r.gradient_evaluations,
-            r.execution_time_seconds, status,
-        )
+    io = output === nothing ? nothing : begin
+        mkpath(dirname(output))
+        aberto = open(output, "w")
+        write(aberto, join(header, ','), '\n')
+        aberto
     end
+
+    try
+        for cenario in cenarios
+            println("\n=== ffjm2: $(cenario.nome) ===")
+            x0 = collect(float.(cenario.x0))
+
+            raw_residual = if cenario.tipo === :real
+                (x -> sv_fork_assimilation(x, tbeg, tend, nothing).erro)
+            else
+                dados_pregerados = sv_fork_dados_pregerados(cenario.x_otimo, tbeg, tend)
+                (x -> sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro)
+            end
+
+            r = ffjm2(raw_residual, x0; update, maxiter = ffjm2_maxiter, g_tol, show_trace, ffjm2_options...)
+
+            residual_final = collect(raw_residual(r.minimizer))
+            rmsd = norm(residual_final) / sqrt(length(residual_final))
+            status = string(r.status)
+
+            resultado = (;
+                cenario = cenario.nome,
+                dimension = length(x0),
+                minimizer = copy(r.minimizer),
+                rmsd,
+                f = r.minimum,
+                gradient_norm = norm(r.gradient),
+                function_evaluations = r.function_evaluations,
+                gradient_evaluations = r.gradient_evaluations,
+                execution_time_seconds = r.execution_time_seconds,
+                converged = r.converged,
+                status,
+            )
+            push!(resultados, resultado)
+
+            if io !== nothing
+                row = (
+                    resultado.cenario, resultado.dimension, resultado.rmsd, resultado.gradient_norm,
+                    resultado.execution_time_seconds, resultado.function_evaluations,
+                    resultado.gradient_evaluations, resultado.converged, resultado.status,
+                    resultado.f, resultado.minimizer,
+                )
+                write(io, join(csv_field.(row), ','), '\n')
+                flush(io)
+            end
+
+            @printf(
+                "ffjm2 (%s): RMSD=%.3e  f=%.4f  ||grad||=%.3e  fevals=%d  gevals=%d  tempo=%.1fs  status=%s\n",
+                cenario.nome, rmsd, r.minimum, norm(r.gradient),
+                r.function_evaluations, r.gradient_evaluations,
+                r.execution_time_seconds, status,
+            )
+        end
+    finally
+        io === nothing || close(io)
+    end
+
+    output === nothing || println("\nResultados do ffjm2 (4 cenários) salvos em: $output")
 
     return resultados
 end
 
+
+
+"""
+    acompanhar_ffjm2_twin_dim10(; x_otimo=range(0.12, 0.07, length=10), x0=fill(0.09, 10),
+                                    tbeg=0.0, tend=31.0, update=:psb, maxiter=500,
+                                    show_trace=true, ffjm2_options=(;))
+
+Roda só o `ffjm2` no experimento gêmeo (dados pré-gerados) de dimensão 10
+(mesmo `x_otimo`/`x0` de [`comparar_solvers_twin_dim10`](@ref)), imprimindo
+o traço iteração a iteração (`show_trace=true` por padrão) — mesma ideia de
+`acompanhar_ffjm2_real_dim3`, mas no experimento gêmeo em vez de dados
+reais, pra acompanhar de perto o comportamento do algoritmo nesse cenário.
+"""
+function acompanhar_ffjm2_twin_dim10(;
+    x_otimo::AbstractVector = collect(range(0.12, 0.07, length = 10)),
+    x0::AbstractVector = fill(0.09, 10),
+    tbeg::Real = 0.0,
+    tend::Real = 31.0,
+    update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
+    maxiter::Integer = 500,
+    show_trace::Bool = true,
+    ffjm2_options = (;),
+)
+    x = collect(float.(x0))
+    dados_pregerados = sv_fork_dados_pregerados(x_otimo, tbeg, tend)
+    raw_residual(z) = sv_fork_assimilation_pregerado(z, tbeg, tend, dados_pregerados, nothing).erro
+    resultado = ffjm2(raw_residual, x; update, maxiter, show_trace, ffjm2_options...)
+    println(
+        "\nFinal: minimizer=", resultado.minimizer, " f=", resultado.minimum,
+        " ||grad||=", norm(resultado.gradient), " status=", resultado.status,
+        " iterations=", resultado.iterations,
+    )
+    return resultado
+end
 
 
 function excluir_depois()

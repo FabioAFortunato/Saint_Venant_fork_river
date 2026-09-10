@@ -6,6 +6,8 @@
 \usepackage{amsmath}
 \usepackage{amsthm}
 \usepackage{longtable}
+\usepackage{array}
+\usepackage{seqsplit}
 \usepackage{booktabs}
 \usepackage{siunitx}
 \usepackage{graphicx}
@@ -241,12 +243,18 @@ evaluated with the same default tolerances for Algorithm~\ref{complexity} and fo
 Optim.jl's \texttt{BFGS} \cite{Mogensen2018} (kept equal so the comparison
 is fair):
 \begin{itemize}
-    \item \textbf{Gradient}: the gradient norm reaches $\|\nabla f\| \le 10^{-8}$. This is a genuine first-order stationary point.
-    \item \textbf{Step}: the last step has (numerically) zero length. The solver stalls and stops making progress.
-    \item \textbf{Function}: the objective value does not change between two consecutive iterations. The iterate is stuck on a plateau.
+    \item \textbf{Gradient}: the gradient norm reaches $\|\nabla f\| \le 10^{-8}$. This is a genuine first-order stationary point (reported as \texttt{grad\_conv} for both Algorithm~\ref{complexity} and BFGS in the tables below).
+    \item \textbf{Step}: the last step has (numerically) zero length. The solver stalls and stops making progress (reported as \texttt{step\_conv} for both Algorithm~\ref{complexity} and BFGS).
+    \item \textbf{Function}: the objective value does not change between two consecutive iterations. The iterate is stuck on a plateau (reported as \texttt{func\_conv} for both Algorithm~\ref{complexity} and BFGS).
     \item \textbf{Stalled}: Algorithm~\ref{complexity}'s regularization parameter exceeded its
-    ceiling.
+    ceiling, that is, $\sigma > 10^{12}$ (reported as \texttt{reg\_stalled}; BFGS has no equivalent criterion).
 \end{itemize}
+Gradient, Step, and Function use the same name for both methods by
+construction: BFGS's own status is classified by checking
+\texttt{Optim.g\_converged}, then \texttt{Optim.x\_converged}, then
+\texttt{Optim.f\_converged} on its result, in that order, so the two
+methods can be compared under one shared vocabulary instead of each
+reporting its own native termination code.
 %A run that exhausts the iteration budget without meeting any of the first
 %three would be reported separately as \emph{not converged}. This case
 %does not appear in Tables~\ref{tab:hessian-models} and
@@ -318,7 +326,8 @@ exactly where they disagree, Table~\ref{tab:psb-vs-sr1} isolates the three
 problems on which at least one of the two methods does not stop under the
 gradient criterion.
 
-\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
+{\footnotesize
+\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r >{\raggedright\arraybackslash}p{2.2cm}}
 \caption{Algorithm~\ref{complexity} (PSB) vs.\ Algorithm~\ref{complexity} (SR1): per-problem comparison on the MGH problems.}
 \label{tab:psb-vs-sr1} \\
 \toprule
@@ -335,15 +344,15 @@ Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & 
 \endfoot
 \bottomrule
 \endlastfoot
-MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & step \\
-MGH10 & Algorithm~\ref{complexity} (SR1) & 4.397293e+01 & 5.500886e-02 & 297 & 125 & step \\
+MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 5.754922e-05 & 299 & 127 & \texttt{step\_conv} \\
+MGH10 & Algorithm~\ref{complexity} (SR1) & 4.397293e+01 & 5.500886e-02 & 297 & 125 & \texttt{step\_conv} \\
 \midrule
-MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & function \\
-MGH16 & Algorithm~\ref{complexity} (SR1) & 4.291110e+04 & 6.255963e-05 & 44 & 9 & function \\
+MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 9.258506e-05 & 98 & 36 & \texttt{func\_conv} \\
+MGH16 & Algorithm~\ref{complexity} (SR1) & 4.291110e+04 & 6.255963e-05 & 44 & 9 & \texttt{func\_conv} \\
 \midrule
-MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & function \\
-MGH31 & Algorithm~\ref{complexity} (SR1) & 1.528639e+00 & 4.387102e-09 & 44 & 29 & gradient \\
-\end{longtable}
+MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 2.527165e-08 & 62 & 21 & \texttt{func\_conv} \\
+MGH31 & Algorithm~\ref{complexity} (SR1) & 1.528639e+00 & 4.387102e-09 & 44 & 29 & \texttt{grad\_conv} \\
+\end{longtable}}
 \FloatBarrier
 
 \noindent
@@ -405,6 +414,8 @@ sometimes cost more than $2.6\times$ what evaluating the objective
 function costs. Since Newton achieves the best
 performance among the three, we adopt it as the model solver
 used throughout the rest of this work.
+
+
 
 
 \subsection{sum of square problem BFGS configuration}
@@ -515,7 +526,8 @@ ratio, and $-\nabla f$+Armijo at $k=0$ and as a safeguard. The following
 table compares it against BFGS with backtracking line search on the 34
 MGH least-squares problems.
 
-\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r l}
+{\footnotesize
+\begin{longtable}{l l S[table-format=1.3e2] S[table-format=1.3e2] r r >{\raggedright\arraybackslash}p{2.2cm}}
 \caption{Algorithm~\ref{complexity} (PSB) vs.\ BFGS (backtracking): per-problem comparison on the MGH problems.}
 \label{tab:psb-vs-bfgs} \\
 \toprule
@@ -532,108 +544,108 @@ Problem & Method & {$f$} & {$\|\nabla f\|$} & {Func.\ evals} & {Grad.\ evals} & 
 \endfoot
 \bottomrule
 \endlastfoot
-MGH01 & Algorithm~\ref{complexity} (PSB) & 2.415715e-22 & 9.822188e-12 & 12 & 8 & gradient \\
-MGH01 & BFGS (backtracking) & 1.981121e-22 & 3.687403e-10 & 53 & 40 & gradient \\
+MGH01 & Algorithm~\ref{complexity} (PSB) & 2.415715e-22 & 9.822188e-12 & 12 & 8 & \texttt{grad\_conv} \\
+MGH01 & BFGS (backtracking) & 1.981121e-22 & 3.687403e-10 & 53 & 40 & \texttt{grad\_conv} \\
 \midrule
-MGH02 & Algorithm~\ref{complexity} (PSB) & 5.096567e-18 & 3.844849e-09 & 10 & 7 & gradient \\
-MGH02 & BFGS (backtracking) & 1.106930e-26 & 2.198151e-12 & 15 & 11 & gradient \\
+MGH02 & Algorithm~\ref{complexity} (PSB) & 5.096567e-18 & 3.844849e-09 & 10 & 7 & \texttt{grad\_conv} \\
+MGH02 & BFGS (backtracking) & 1.106930e-26 & 2.198151e-12 & 15 & 11 & \texttt{grad\_conv} \\
 \midrule
-MGH03 & Algorithm~\ref{complexity} (PSB) & 1.576836e-11 & 2.568219e-09 & 31 & 20 & gradient \\
-MGH03 & BFGS (backtracking) & 5.053640e-30 & 2.830752e-10 & 233 & 174 & gradient \\
+MGH03 & Algorithm~\ref{complexity} (PSB) & 1.576836e-11 & 2.568219e-09 & 31 & 20 & \texttt{grad\_conv} \\
+MGH03 & BFGS (backtracking) & 5.053640e-30 & 2.830752e-10 & 233 & 174 & \texttt{grad\_conv} \\
 \midrule
-MGH04 & Algorithm~\ref{complexity} (PSB) & 3.811648e-17 & 8.733972e-09 & 10 & 8 & gradient \\
-MGH04 & BFGS (backtracking) & 9.860761e-32 & 4.440892e-10 & 40 & 14 & gradient \\
+MGH04 & Algorithm~\ref{complexity} (PSB) & 3.811648e-17 & 8.733972e-09 & 10 & 8 & \texttt{grad\_conv} \\
+MGH04 & BFGS (backtracking) & 9.860761e-32 & 4.440892e-10 & 40 & 14 & \texttt{grad\_conv} \\
 \midrule
-MGH05 & Algorithm~\ref{complexity} (PSB) & 1.307511e-16 & 6.948485e-09 & 10 & 8 & gradient \\
-MGH05 & BFGS (backtracking) & 2.500895e-22 & 1.079551e-10 & 22 & 19 & gradient \\
+MGH05 & Algorithm~\ref{complexity} (PSB) & 1.307511e-16 & 6.948485e-09 & 10 & 8 & \texttt{grad\_conv} \\
+MGH05 & BFGS (backtracking) & 2.500895e-22 & 1.079551e-10 & 22 & 19 & \texttt{grad\_conv} \\
 \midrule
-MGH06 & Algorithm~\ref{complexity} (PSB) & 1.010000e+03 & 1.161571e-28 & 11 & 2 & gradient \\
-MGH06 & BFGS (backtracking) & 1.010000e+03 & 1.161571e-28 & 10 & 2 & gradient \\
+MGH06 & Algorithm~\ref{complexity} (PSB) & 1.010000e+03 & 1.161571e-28 & 11 & 2 & \texttt{grad\_conv} \\
+MGH06 & BFGS (backtracking) & 1.010000e+03 & 1.161571e-28 & 10 & 2 & \texttt{grad\_conv} \\
 \midrule
-MGH07 & Algorithm~\ref{complexity} (PSB) & 1.492293e-17 & 6.034835e-09 & 17 & 10 & gradient \\
-MGH07 & BFGS (backtracking) & 5.236320e-19 & 5.028697e-09 & 41 & 30 & gradient \\
+MGH07 & Algorithm~\ref{complexity} (PSB) & 1.492293e-17 & 6.034835e-09 & 17 & 10 & \texttt{grad\_conv} \\
+MGH07 & BFGS (backtracking) & 5.236320e-19 & 5.028697e-09 & 41 & 30 & \texttt{grad\_conv} \\
 \midrule
-MGH08 & Algorithm~\ref{complexity} (PSB) & 4.107439e-03 & 4.903415e-10 & 12 & 9 & gradient \\
-MGH08 & BFGS (backtracking) & 4.107439e-03 & 7.394161e-10 & 34 & 28 & gradient \\
+MGH08 & Algorithm~\ref{complexity} (PSB) & 4.107439e-03 & 4.903415e-10 & 12 & 9 & \texttt{grad\_conv} \\
+MGH08 & BFGS (backtracking) & 4.107439e-03 & 7.394161e-10 & 34 & 28 & \texttt{grad\_conv} \\
 \midrule
-MGH09 & Algorithm~\ref{complexity} (PSB) & 5.639664e-09 & 7.549518e-11 & 9 & 7 & gradient \\
-MGH09 & BFGS (backtracking) & 5.639664e-09 & 1.552131e-09 & 6 & 5 & gradient \\
+MGH09 & Algorithm~\ref{complexity} (PSB) & 5.639664e-09 & 7.549518e-11 & 9 & 7 & \texttt{grad\_conv} \\
+MGH09 & BFGS (backtracking) & 5.639664e-09 & 1.552131e-09 & 6 & 5 & \texttt{grad\_conv} \\
 \midrule
-MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 1.204293e-05 & 276 & 122 & stalled \\
-MGH10 & BFGS (backtracking) & 4.397293e+01 & 2.281500e+00 & 552 & 386 & step \\
+MGH10 & Algorithm~\ref{complexity} (PSB) & 4.397293e+01 & 1.204293e-05 & 276 & 122 & \texttt{reg\_stalled} \\
+MGH10 & BFGS (backtracking) & 4.397293e+01 & 2.281500e+00 & 552 & 386 & \texttt{step\_conv} \\
 \midrule
-MGH11 & Algorithm~\ref{complexity} (PSB) & 5.960004e-21 & 3.251504e-13 & 26 & 17 & gradient \\
-MGH11 & BFGS (backtracking) & 2.268388e-20 & 7.169397e-10 & 50 & 42 & gradient \\
+MGH11 & Algorithm~\ref{complexity} (PSB) & 5.960004e-21 & 3.251504e-13 & 26 & 17 & \texttt{grad\_conv} \\
+MGH11 & BFGS (backtracking) & 2.268388e-20 & 7.169397e-10 & 50 & 42 & \texttt{grad\_conv} \\
 \midrule
-MGH12 & Algorithm~\ref{complexity} (PSB) & 3.799377e-18 & 3.814938e-10 & 14 & 11 & gradient \\
-MGH12 & BFGS (backtracking) & 1.579764e-21 & 3.202002e-11 & 53 & 41 & gradient \\
+MGH12 & Algorithm~\ref{complexity} (PSB) & 3.799377e-18 & 3.814938e-10 & 14 & 11 & \texttt{grad\_conv} \\
+MGH12 & BFGS (backtracking) & 1.579764e-21 & 3.202002e-11 & 53 & 41 & \texttt{grad\_conv} \\
 \midrule
-MGH13 & Algorithm~\ref{complexity} (PSB) & 5.156722e-12 & 9.613609e-09 & 12 & 9 & gradient \\
-MGH13 & BFGS (backtracking) & 1.566490e-14 & 3.607786e-09 & 55 & 45 & gradient \\
+MGH13 & Algorithm~\ref{complexity} (PSB) & 5.156722e-12 & 9.613609e-09 & 12 & 9 & \texttt{grad\_conv} \\
+MGH13 & BFGS (backtracking) & 1.566490e-14 & 3.607786e-09 & 55 & 45 & \texttt{grad\_conv} \\
 \midrule
-MGH14 & Algorithm~\ref{complexity} (PSB) & 9.424359e-19 & 8.234967e-10 & 11 & 7 & gradient \\
-MGH14 & BFGS (backtracking) & 3.521535e-22 & 5.460933e-10 & 44 & 31 & gradient \\
+MGH14 & Algorithm~\ref{complexity} (PSB) & 9.424359e-19 & 8.234967e-10 & 11 & 7 & \texttt{grad\_conv} \\
+MGH14 & BFGS (backtracking) & 3.521535e-22 & 5.460933e-10 & 44 & 31 & \texttt{grad\_conv} \\
 \midrule
-MGH15 & Algorithm~\ref{complexity} (PSB) & 1.537528e-04 & 9.059854e-09 & 38 & 22 & gradient \\
-MGH15 & BFGS (backtracking) & 1.537528e-04 & 4.132861e-10 & 39 & 33 & gradient \\
+MGH15 & Algorithm~\ref{complexity} (PSB) & 1.537528e-04 & 9.059854e-09 & 38 & 22 & \texttt{grad\_conv} \\
+MGH15 & BFGS (backtracking) & 1.537528e-04 & 4.132861e-10 & 39 & 33 & \texttt{grad\_conv} \\
 \midrule
-MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 6.530587e-05 & 91 & 37 & stalled \\
-MGH16 & BFGS (backtracking) & 4.291110e+04 & 2.831466e-05 & 72 & 26 & function \\
+MGH16 & Algorithm~\ref{complexity} (PSB) & 4.291110e+04 & 6.530587e-05 & 91 & 37 & \texttt{reg\_stalled} \\
+MGH16 & BFGS (backtracking) & 4.291110e+04 & 2.831466e-05 & 72 & 26 & \texttt{func\_conv} \\
 \midrule
-MGH17 & Algorithm~\ref{complexity} (PSB) & 2.732447e-05 & 8.377671e-09 & 24 & 12 & gradient \\
-MGH17 & BFGS (backtracking) & 2.732447e-05 & 8.227669e-09 & 90 & 59 & gradient \\
+MGH17 & Algorithm~\ref{complexity} (PSB) & 2.732447e-05 & 8.377671e-09 & 24 & 12 & \texttt{grad\_conv} \\
+MGH17 & BFGS (backtracking) & 2.732447e-05 & 8.227669e-09 & 90 & 59 & \texttt{grad\_conv} \\
 \midrule
-MGH18 & Algorithm~\ref{complexity} (PSB) & 1.002042e-18 & 1.650363e-11 & 58 & 34 & gradient \\
-MGH18 & BFGS (backtracking) & 2.827825e-03 & 1.276728e-08 & 44 & 41 & gradient \\
+MGH18 & Algorithm~\ref{complexity} (PSB) & 1.002042e-18 & 1.650363e-11 & 58 & 34 & \texttt{grad\_conv} \\
+MGH18 & BFGS (backtracking) & 2.827825e-03 & 1.276728e-08 & 44 & 41 & \texttt{grad\_conv} \\
 \midrule
-MGH19 & Algorithm~\ref{complexity} (PSB) & 4.383556e-02 & 9.198492e-09 & 115 & 59 & gradient \\
-MGH19 & BFGS (backtracking) & 1.373773e-01 & 8.291793e-10 & 147 & 113 & gradient \\
+MGH19 & Algorithm~\ref{complexity} (PSB) & 4.383556e-02 & 9.198492e-09 & 115 & 59 & \texttt{grad\_conv} \\
+MGH19 & BFGS (backtracking) & 1.373773e-01 & 8.291793e-10 & 147 & 113 & \texttt{grad\_conv} \\
 \midrule
-MGH20 & Algorithm~\ref{complexity} (PSB) & 1.143835e-03 & 1.841972e-09 & 13 & 10 & gradient \\
-MGH20 & BFGS (backtracking) & 1.143835e-03 & 7.070265e-09 & 49 & 39 & gradient \\
+MGH20 & Algorithm~\ref{complexity} (PSB) & 1.143835e-03 & 1.841972e-09 & 13 & 10 & \texttt{grad\_conv} \\
+MGH20 & BFGS (backtracking) & 1.143835e-03 & 7.070265e-09 & 49 & 39 & \texttt{grad\_conv} \\
 \midrule
-MGH21 & Algorithm~\ref{complexity} (PSB) & 2.415715e-21 & 3.106049e-11 & 12 & 8 & gradient \\
-MGH21 & BFGS (backtracking) & 4.792661e-18 & 1.495834e-09 & 228 & 150 & gradient \\
+MGH21 & Algorithm~\ref{complexity} (PSB) & 2.415715e-21 & 3.106049e-11 & 12 & 8 & \texttt{grad\_conv} \\
+MGH21 & BFGS (backtracking) & 4.792661e-18 & 1.495834e-09 & 228 & 150 & \texttt{grad\_conv} \\
 \midrule
-MGH22 & Algorithm~\ref{complexity} (PSB) & 4.516652e-14 & 2.795657e-10 & 13 & 10 & gradient \\
-MGH22 & BFGS (backtracking) & 1.653367e-13 & 1.561713e-08 & 136 & 112 & gradient \\
+MGH22 & Algorithm~\ref{complexity} (PSB) & 4.516652e-14 & 2.795657e-10 & 13 & 10 & \texttt{grad\_conv} \\
+MGH22 & BFGS (backtracking) & 1.653367e-13 & 1.561713e-08 & 136 & 112 & \texttt{grad\_conv} \\
 \midrule
-MGH23 & Algorithm~\ref{complexity} (PSB) & 1.124989e-05 & 2.279978e-09 & 13 & 10 & gradient \\
-MGH23 & BFGS (backtracking) & 1.124989e-05 & 1.205331e-08 & 87 & 68 & gradient \\
+MGH23 & Algorithm~\ref{complexity} (PSB) & 1.124989e-05 & 2.279978e-09 & 13 & 10 & \texttt{grad\_conv} \\
+MGH23 & BFGS (backtracking) & 1.124989e-05 & 1.205331e-08 & 87 & 68 & \texttt{grad\_conv} \\
 \midrule
-MGH24 & Algorithm~\ref{complexity} (PSB) & 1.728411e-06 & 1.740229e-09 & 37 & 22 & gradient \\
-MGH24 & BFGS (backtracking) & 1.728411e-06 & 6.288297e-09 & 588 & 450 & gradient \\
+MGH24 & Algorithm~\ref{complexity} (PSB) & 1.728411e-06 & 1.740229e-09 & 37 & 22 & \texttt{grad\_conv} \\
+MGH24 & BFGS (backtracking) & 1.728411e-06 & 6.288297e-09 & 588 & 450 & \texttt{grad\_conv} \\
 \midrule
-MGH25 & Algorithm~\ref{complexity} (PSB) & 7.395571e-32 & 3.845925e-16 & 13 & 6 & gradient \\
-MGH25 & BFGS (backtracking) & 6.843630e-26 & 7.268618e-12 & 23 & 16 & gradient \\
+MGH25 & Algorithm~\ref{complexity} (PSB) & 7.395571e-32 & 3.845925e-16 & 13 & 6 & \texttt{grad\_conv} \\
+MGH25 & BFGS (backtracking) & 6.843630e-26 & 7.268618e-12 & 23 & 16 & \texttt{grad\_conv} \\
 \midrule
-MGH26 & Algorithm~\ref{complexity} (PSB) & 1.397528e-05 & 2.997834e-09 & 27 & 16 & gradient \\
-MGH26 & BFGS (backtracking) & 1.397528e-05 & 1.106362e-08 & 36 & 34 & gradient \\
+MGH26 & Algorithm~\ref{complexity} (PSB) & 1.397528e-05 & 2.997834e-09 & 27 & 16 & \texttt{grad\_conv} \\
+MGH26 & BFGS (backtracking) & 1.397528e-05 & 1.106362e-08 & 36 & 34 & \texttt{grad\_conv} \\
 \midrule
-MGH27 & Algorithm~\ref{complexity} (PSB) & 2.240730e-16 & 1.941231e-09 & 11 & 8 & gradient \\
-MGH27 & BFGS (backtracking) & 5.734697e-20 & 3.689878e-09 & 20 & 17 & gradient \\
+MGH27 & Algorithm~\ref{complexity} (PSB) & 2.240730e-16 & 1.941231e-09 & 11 & 8 & \texttt{grad\_conv} \\
+MGH27 & BFGS (backtracking) & 5.734697e-20 & 3.689878e-09 & 20 & 17 & \texttt{grad\_conv} \\
 \midrule
-MGH28 & Algorithm~\ref{complexity} (PSB) & 2.223149e-15 & 6.931523e-09 & 10 & 8 & gradient \\
-MGH28 & BFGS (backtracking) & 2.533828e-16 & 1.086349e-08 & 26 & 18 & gradient \\
+MGH28 & Algorithm~\ref{complexity} (PSB) & 2.223149e-15 & 6.931523e-09 & 10 & 8 & \texttt{grad\_conv} \\
+MGH28 & BFGS (backtracking) & 2.533828e-16 & 1.086349e-08 & 26 & 18 & \texttt{grad\_conv} \\
 \midrule
-MGH29 & Algorithm~\ref{complexity} (PSB) & 1.130540e-22 & 1.906829e-11 & 8 & 7 & gradient \\
-MGH29 & BFGS (backtracking) & 9.104593e-19 & 1.563296e-09 & 8 & 8 & gradient \\
+MGH29 & Algorithm~\ref{complexity} (PSB) & 1.130540e-22 & 1.906829e-11 & 8 & 7 & \texttt{grad\_conv} \\
+MGH29 & BFGS (backtracking) & 9.104593e-19 & 1.563296e-09 & 8 & 8 & \texttt{grad\_conv} \\
 \midrule
-MGH30 & Algorithm~\ref{complexity} (PSB) & 7.642460e-27 & 3.456063e-13 & 10 & 7 & gradient \\
-MGH30 & BFGS (backtracking) & 1.965544e-19 & 4.026641e-09 & 46 & 23 & gradient \\
+MGH30 & Algorithm~\ref{complexity} (PSB) & 7.642460e-27 & 3.456063e-13 & 10 & 7 & \texttt{grad\_conv} \\
+MGH30 & BFGS (backtracking) & 1.965544e-19 & 4.026641e-09 & 46 & 23 & \texttt{grad\_conv} \\
 \midrule
-MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 4.173205e-08 & 49 & 18 & stalled \\
-MGH31 & BFGS (backtracking) & 1.340110e+00 & 4.482312e-09 & 78 & 43 & gradient \\
+MGH31 & Algorithm~\ref{complexity} (PSB) & 1.528639e+00 & 4.173205e-08 & 49 & 18 & \texttt{reg\_stalled} \\
+MGH31 & BFGS (backtracking) & 1.340110e+00 & 4.482312e-09 & 78 & 43 & \texttt{grad\_conv} \\
 \midrule
-MGH32 & Algorithm~\ref{complexity} (PSB) & 5.000000e+00 & 3.845925e-16 & 3 & 2 & gradient \\
-MGH32 & BFGS (backtracking) & 5.000000e+00 & 5.578802e-16 & 2 & 2 & gradient \\
+MGH32 & Algorithm~\ref{complexity} (PSB) & 5.000000e+00 & 3.845925e-16 & 3 & 2 & \texttt{grad\_conv} \\
+MGH32 & BFGS (backtracking) & 5.000000e+00 & 5.578802e-16 & 2 & 2 & \texttt{grad\_conv} \\
 \midrule
-MGH33 & Algorithm~\ref{complexity} (PSB) & 2.317073e+00 & 6.326298e-11 & 12 & 5 & gradient \\
-MGH33 & BFGS (backtracking) & 2.317073e+00 & 1.423632e-10 & 13 & 5 & gradient \\
+MGH33 & Algorithm~\ref{complexity} (PSB) & 2.317073e+00 & 6.326298e-11 & 12 & 5 & \texttt{grad\_conv} \\
+MGH33 & BFGS (backtracking) & 2.317073e+00 & 1.423632e-10 & 13 & 5 & \texttt{grad\_conv} \\
 \midrule
-MGH34 & Algorithm~\ref{complexity} (PSB) & 3.067568e+00 & 1.552202e-10 & 9 & 2 & gradient \\
-MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & gradient \\
-\end{longtable}
+MGH34 & Algorithm~\ref{complexity} (PSB) & 3.067568e+00 & 1.552202e-10 & 9 & 2 & \texttt{grad\_conv} \\
+MGH34 & BFGS (backtracking) & 3.067568e+00 & 2.134352e-10 & 9 & 2 & \texttt{grad\_conv} \\
+\end{longtable}}
 \FloatBarrier
 
 \noindent
@@ -874,12 +886,15 @@ BFGS and BOBYQA were allowed at most 1000 evaluations of the residual,
 and Algorithm~\ref{complexity} at most 500 outer iterations (each
 costing at least one residual evaluation, more on any rejected
 $\sigma$-step). The Status column in Tables~\ref{tab:pregenerated-dim2},
-\ref{tab:pregenerated-dim10}, \ref{tab:real-dim3}, and \ref{tab:real-dim10}
-below reports each solver's own termination code directly, for instance
-\texttt{GradientNorm} or \texttt{SUCCESS} for a genuine
-stopping-criterion match, \texttt{alpha\_too\_small} for a stalled line
-search, or \texttt{maximum\_iterations}/\texttt{XTOL\_REACHED} for a
-budget exhausted without one.
+\ref{tab:pregenerated-dim10}, \ref{tab:real-dim2}, and \ref{tab:real-dim10}
+below reports each solver's own termination code directly:
+\texttt{grad\_conv} for a genuine stopping-criterion match for
+Algorithm~\ref{complexity} and \texttt{GradientNorm} for the same in BFGS,
+\texttt{Trust\_Region} for a genuine BOBYQA stopping criterion,
+\texttt{reg\_stalled} for Algorithm~\ref{complexity}'s stalled $\sigma$
+increases and \texttt{alpha\_too\_small} for BFGS's stalled line search,
+and \texttt{maximum\_iterations}/\texttt{XTOL\_REACHED}/\texttt{FTOL\_REACHED}
+for a budget exhausted without a genuine stopping-criterion match.
 
 All three solvers are implemented in Julia, version 1.10, and every
 experiment reported in this section was run on a computer with a
@@ -927,6 +942,9 @@ solver:
     above.
 \end{enumerate}
 
+
+\subsubsection{Results}
+
 \begin{table}[htbp]
 \centering
 \caption{Pregenerated-data experiment, $n_{grid}=2$: $\theta^\star=(0.20,\,0.15)$,
@@ -937,9 +955,9 @@ solver:
 \toprule
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
-BFGS (backtracking) & $6.95\times10^{-9}$ & $1.63\times10^{-14}$ & $1.19\times10^{-5}$ & 17 & 9 & 416.1 & \texttt{GradientNorm} \\
-BOBYQA & $1.56\times10^{-9}$ & $8.20\times10^{-16}$ & $2.91\times10^{-6}$ & 43 & 0 & 456.2 & \texttt{XTOL\_REACHED} \\
-Algorithm~\ref{complexity} & $3.04\times10^{-15}$ & $1.57\times10^{-27}$ & $1.36\times10^{-13}$ & 11 & 6 & 200.5 & \texttt{gradient\_converged} \\
+BFGS (backtracking) & $2.95\times10^{-7}$ & $1.47\times10^{-11}$ & $4.97\times10^{-4}$ & 24 & 8 & 445.6 & \texttt{GradientNorm} \\
+BOBYQA & $4.61\times10^{-8}$ & $3.59\times10^{-13}$ & $6.94\times10^{-5}$ & 30 & 0 & 333.0 & \texttt{XTOL\_REACHED} \\
+Algorithm~\ref{complexity} & $5.86\times10^{-11}$ & $5.80\times10^{-19}$ & $6.65\times10^{-8}$ & 10 & 5 & 159.6 & \texttt{grad\_conv} \\
 \bottomrule
 \end{tabular}
 }%
@@ -976,9 +994,9 @@ the tightest gradient norm and RMSD.
 
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
-BFGS (backtracking) & $1.74\times10^{-6}$ & $1.03\times10^{-9}$ & $1.32\times10^{-4}$ & 205 & 168 & 9959.2 & \texttt{GradientNorm} \\
-BOBYQA & $6.80\times10^{-5}$ & $1.56\times10^{-6}$ & $3.27\times10^{-4}$ & 1000 & 0 & 12037.3 & \texttt{MAXEVAL\_REACHED} \\
-Algorithm~\ref{complexity} & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89\times10^{-11}$ & 29 & 17 & 942.7 & \texttt{gradient\_converged} \\
+BFGS (backtracking) & $3.66\times10^{-4}$ & $2.26\times10^{-5}$ & $1.30\times10^{-3}$ & 563 & 110 & 12933.4 & \texttt{GradientNorm} \\
+BOBYQA & $1.80\times10^{-1}$ & $5.50\times10^{0}$ & $2.02\times10^{2}$ & 43 & 0 & 549.6 & \texttt{XTOL\_REACHED} \\
+Algorithm~\ref{complexity} & $4.74\times10^{-1}$ & $3.80\times10^{1}$ & $1.59\times10^{4}$ & 47 & 17 & 987.6 & \texttt{reg\_stalled} \\
 \bottomrule
 \end{tabular}
 }%
@@ -986,25 +1004,34 @@ Algorithm~\ref{complexity} & $5.02\times10^{-13}$ & $4.26\times10^{-23}$ & $1.89
 \FloatBarrier
 
 \noindent
-At $n_{grid}=10$ the gap between Algorithm~\ref{complexity} and the other two widens sharply.
-It reaches a gradient norm roughly $7$ orders of magnitude smaller than
-BFGS or BOBYQA, using about $7$--$35\times$ fewer function evaluations
-and $10$--$13\times$ less wall-clock time. BOBYQA exhausts its
-$1000$-evaluation budget without reaching the gradient criterion
-(\texttt{MAXEVAL\_REACHED}, \texttt{converged=false}).
+At $n_{grid}=10$ the picture reverses: BFGS is now the only method that
+certifies a genuine stopping criterion (\texttt{GradientNorm}), though at
+a far higher cost than at $n_{grid}=2$ ($563$ function and $110$ gradient
+evaluations, $\approx3.6$h). BOBYQA stops early under
+\texttt{XTOL\_REACHED} with a gradient norm still at $\approx202$, many
+orders of magnitude from a stationary point. Algorithm~\ref{complexity}'s
+regularization parameter $\sigma$ hits its ceiling
+(\texttt{reg\_stalled}, \texttt{converged=false}) with the worst gradient
+norm and RMSD of the three ($\approx1.59\times10^4$ and
+$\approx4.74\times10^{-1}$, respectively) -- a sharp reversal from
+$n_{grid}=2$, where it was uniformly the cheapest and most accurate of
+the three. This suggests the higher-dimensional pregenerated-data problem
+pushes the iterates into a region where the quartic model's step is
+repeatedly rejected, forcing $\sigma$ upward without ever finding a good
+enough step to bring it back down.
 
 \begin{table}[htbp]
 \centering
-\caption{Real data, $n_{grid}=3$: $\theta^0=(0.09,0.09,0.09)$.}
-\label{tab:real-dim3}
+\caption{Real data, $n_{grid}=2$: $\theta^0=(0.09,0.09)$.}
+\label{tab:real-dim2}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
 \toprule
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
-BFGS (backtracking) & $5.46\times10^{-2}$ & $1.0085$ & $3.85\times10^{-6}$ & 25 & 15 & 738.5 & \texttt{GradientNorm} \\
-BOBYQA & $5.46\times10^{-2}$ & $1.0085$ & $1.06\times10^{-4}$ & 116 & 0 & 1432.3 & \texttt{XTOL\_REACHED} \\
-Algorithm~\ref{complexity} & $5.46\times10^{-2}$ & $0.5043$ & $6.41\times10^{-9}$ & 26 & 12 & 553.6 & \texttt{gradient\_converged} \\
+BFGS (backtracking) & $2.10\times10^{-1}$ & $7.44\times10^{0}$ & $5.31\times10^{3}$ & 228 & 32 & 3191.3 & \texttt{alpha\_too\_small} \\
+BOBYQA & $1.42\times10^{-1}$ & $3.41\times10^{0}$ & $1.65\times10^{2}$ & 67 & 0 & 722.7 & \texttt{Trust\_Region} \\
+Algorithm~\ref{complexity} & $1.42\times10^{-1}$ & $3.42\times10^{0}$ & $1.80\times10^{2}$ & 53 & 21 & 806.8 & \texttt{reg\_stalled} \\
 \bottomrule
 \end{tabular}
 }%
@@ -1020,12 +1047,18 @@ Algorithm~\ref{complexity} & $5.46\times10^{-2}$ & $0.5043$ & $6.41\times10^{-9}
 \FloatBarrier
 
 \noindent
-On real data, all three methods agree closely on the minimizer itself.
-RMSD matches to three significant figures across the board
-($\approx5.46\times10^{-2}$), and $f$ matches once Algorithm~\ref{complexity}'s factor
-of $2$ (discussed above) is accounted for. Algorithm~\ref{complexity} again reaches by
-far the smallest gradient norm, roughly three orders of magnitude below
-BFGS, at an evaluation count and wall-clock time comparable to BFGS.
+On real data, BFGS's line search stalls (\texttt{alpha\_too\_small},
+\texttt{converged=false}) before reaching a good point, with the worst
+RMSD of the three ($2.10\times10^{-1}$) and a gradient norm still at
+$\approx5.31\times10^3$. BOBYQA and Algorithm~\ref{complexity} land on
+essentially the same minimizer instead ($\theta\approx(0.087,\,0.155)$),
+with matching RMSD ($\approx1.42\times10^{-1}$) and $f$
+($\approx3.41$--$3.42$, directly comparable now that both methods
+minimize $\tfrac12\|F(\theta)\|_2^2$). BOBYQA certifies its own
+\texttt{Trust\_Region} criterion using fewer total evaluations ($67$
+versus Algorithm~\ref{complexity}'s $53+21=74$) and less wall-clock time
+($722.7$s versus $806.8$s), while Algorithm~\ref{complexity} again stalls
+on $\sigma$ (\texttt{reg\_stalled}) just short of that same point.
 
 \begin{table}[H]
 \centering
@@ -1036,9 +1069,9 @@ BFGS, at an evaluation count and wall-clock time comparable to BFGS.
 \toprule
 Method & RMSD & $f$ & $\|\nabla f\|$ & Func.\ evals & Grad.\ evals & Time (s) & Status \\
 \midrule
-BFGS (backtracking) & $4.81\times10^{-2}$ & $0.7822$ & $1.19\times10^{6}$ & 171 & 35 & 3691.9 & \texttt{alpha\_too\_small} \\
-BOBYQA & $4.64\times10^{-2}$ & $0.7285$ & $1.11$ & 840 & 0 & 10388.5 & \texttt{SUCCESS} \\
-Algorithm~\ref{complexity} & $4.89\times10^{-2}$ & $0.4049$ & $1.29$ & 1008 & 501 & 31705.6 & \texttt{maximum\_iterations} \\
+BFGS (backtracking) & $5.15\times10^{-2}$ & $4.49\times10^{-1}$ & $1.26\times10^{2}$ & 221 & 61 & 6253.5 & \texttt{alpha\_too\_small} \\
+BOBYQA & $4.68\times10^{-2}$ & $3.70\times10^{-1}$ & $8.67\times10^{-1}$ & 772 & 0 & 9120.5 & \texttt{Trust\_Region} \\
+Algorithm~\ref{complexity} & $4.58\times10^{-2}$ & $3.54\times10^{-1}$ & $7.08\times10^{-1}$ & 60 & 24 & 1258.2 & \texttt{reg\_stalled} \\
 \bottomrule
 \end{tabular}
 }%
@@ -1046,26 +1079,27 @@ Algorithm~\ref{complexity} & $4.89\times10^{-2}$ & $0.4049$ & $1.29$ & 1008 & 50
 \FloatBarrier
 
 \noindent
-This is the hardest of the four scenarios, and the only one where none of
-the three methods reaches a stationary point. BFGS's backtracking line
-search stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with a
-gradient norm still at $\sim1.19\times10^6$, many orders of magnitude away
-from a stationary point, despite needing fewer evaluations and less time
-than BOBYQA or Algorithm~\ref{complexity}. BOBYQA reports \texttt{SUCCESS}
-(its own termination code, not a gradient-based one --- it never evaluates
-$\nabla f$) and reaches the lowest RMSD ($4.64\times10^{-2}$), but needs
-$840$ evaluations and $\approx2.9$h of wall-clock time to get there.
-Algorithm~\ref{complexity} exhausts its iteration budget
-(\texttt{maximum\_iterations}) after $1008$ residual and $501$ Jacobian
-evaluations ($\approx8.8$h): it reaches a gradient norm of $\approx1.29$,
-between BFGS's stall point and a stationary point, at the highest
-evaluation count and wall-clock cost of the three. Unlike the easier
-scenarios above, more evaluations do not translate into a better
-outcome here --- all three land on different minimizers with comparable
-RMSD ($4.6$--$4.9\times10^{-2}$), and none certifies first-order
-optimality; MADS is omitted from this table --- its run at this dimension
-did not finish cleanly (the saved output was incomplete) and is left for
-a future update.
+This remains the hardest of the four scenarios: none of the three
+methods certifies a genuine stopping criterion. BFGS's line search
+stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with the
+largest gradient norm of the three ($\approx1.26\times10^2$) and the
+worst RMSD ($5.15\times10^{-2}$). BOBYQA certifies its own
+\texttt{Trust\_Region} criterion, using $772$ evaluations and
+$\approx2.5$h to reach RMSD $\approx4.68\times10^{-2}$. Algorithm~\ref{complexity}'s
+regularization parameter again hits its ceiling
+(\texttt{reg\_stalled}), but this time it is the best of the three by
+every measure: the smallest gradient norm ($\approx7.08\times10^{-1}$,
+even below BOBYQA's), the lowest RMSD ($4.58\times10^{-2}$), and by far
+the lowest cost ($60$ residual and $24$ Jacobian evaluations,
+$\approx21$min, against BOBYQA's $772$ evaluations and BFGS's
+$282$). This is the opposite of the $n_{grid}=10$ pregenerated-data
+scenario (Table~\ref{tab:pregenerated-dim10}), where the same stall left
+Algorithm~\ref{complexity} the worst of the three -- here it is both the cheapest
+and the most accurate. All three still land on different minimizers with
+comparable RMSD ($4.6$--$5.2\times10^{-2}$), and none certifies
+first-order optimality; MADS is omitted from this table --- its run at
+this dimension did not finish cleanly (the saved output was incomplete)
+and is left for a future update.
 
 
 \clearpage

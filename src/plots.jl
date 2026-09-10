@@ -709,7 +709,7 @@ function plot_assimilation_rmsd_heatmap_pregerado(;
         markercolor = :white,
         markerstrokecolor = :black,
         markerstrokewidth = 1.5,
-        label = "x^* = ($(round(x_otimo[1], digits=4)), $(round(x_otimo[2], digits=4)))",
+        label = "true optimum = ($(round(x_otimo[1], digits=4)), $(round(x_otimo[2], digits=4)))",
     )
 
     mkpath(dirname(output))
