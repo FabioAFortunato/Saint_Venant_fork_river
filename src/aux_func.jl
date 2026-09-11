@@ -3,7 +3,7 @@ using DelimitedFiles
 using PGFPlotsX
 using Plots
 
-pgfplotsx()
+gr()
 
 function busca_perturbacao_segura(
     f,

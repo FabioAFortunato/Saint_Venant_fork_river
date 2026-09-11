@@ -11,7 +11,7 @@ using LinearAlgebra
 using PGFPlotsX
 using Plots
 
-pgfplotsx()
+gr()
 
 include("../data/processed/dado_fork.jl")
 
@@ -1275,7 +1275,7 @@ end
       plot!(televa, zmeio, subplot=2, label = "S-V")
 
 
-      pgfplotsx() 
+      gr() 
 
       # Definir passo para amostragem
         step = 20

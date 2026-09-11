@@ -664,7 +664,11 @@ gradiente — `gradient` no retorno é calculado à parte (via
 `ForwardDiff.gradient!` sobre o objetivo penalizado) só para permitir
 comparação com `bfgs_puro_penalizado_pregerado`, e não conta para
 `function_evaluations`/`gradient_evaluations`. O formato de retorno segue o
-de `bfgs_puro_penalizado_pregerado` para ficar comparável.
+de `bfgs_puro_penalizado_pregerado` para ficar comparável, incluindo
+`accepted_points`: como BOBYQA não expõe aceitação/rejeição interna, guarda
+os pontos avaliados que bateram um novo recorde (valor menor que todos os
+anteriores), na ordem em que foram avaliados — mesma convenção de
+`bobyqa_puro_penalizado` (`ffjm2.jl`, dados reais).
 """
 function bobyqa_puro_penalizado_pregerado(
     x_otimo::AbstractVector,
@@ -691,6 +695,8 @@ function bobyqa_puro_penalizado_pregerado(
 
     function_evaluations = Ref(0)
     function_evaluation_time_seconds = Ref(0.0)
+    evaluated_points = Vector{Vector{Float64}}()
+    evaluated_values = Float64[]
 
     raw_residual(x) = sv_fork_assimilation_pregerado(x, tbeg, tend, dados_pregerados, nothing).erro
     pen_objective(x) = 0.5 * (sum(abs2, raw_residual(x)) + sv_box_penalty(x, lb, ub, penalty_weight))
@@ -700,6 +706,8 @@ function bobyqa_puro_penalizado_pregerado(
         value = pen_objective(x)
         function_evaluations[] += 1
         function_evaluation_time_seconds[] += (time_ns() - start_ns) / 1e9
+        push!(evaluated_points, copy(x))
+        push!(evaluated_values, Float64(value))
         return (isfinite(value) && value <= 1000) ? value : oftype(value, Inf)
     end
 
@@ -724,6 +732,20 @@ function bobyqa_puro_penalizado_pregerado(
     mean_function_evaluation_time_seconds = function_evaluations[] == 0 ? 0.0 :
         function_evaluation_time_seconds[] / function_evaluations[]
 
+    # BOBYQA (livre de derivada) não expõe quais pontos avaliados foram
+    # "aceitos" pela região de confiança interna — como proxy, guarda os
+    # pontos que bateram um novo recorde (valor menor que todos os
+    # anteriores) na ordem em que foram avaliados (mesma convenção de
+    # `bobyqa_puro_penalizado`, `ffjm2.jl`).
+    accepted_points = Vector{Vector{Float64}}()
+    best_value = Inf
+    for (xi, vi) in zip(evaluated_points, evaluated_values)
+        if vi < best_value
+            push!(accepted_points, xi)
+            best_value = vi
+        end
+    end
+
     return (;
         minimizer,
         minimum = minimum_value,
@@ -731,6 +753,7 @@ function bobyqa_puro_penalizado_pregerado(
         gradient = final_gradient,
         hessians = nothing,
         iterations = nothing,
+        accepted_points,
         converged,
         status = Symbol(status),
         execution_time_seconds,
@@ -1355,7 +1378,7 @@ end
 """
     comparar_solvers_twin_dim2(; kwargs...)
 
-Experimento gêmeo em dimensão 2: `x_otimo = [0.2, 0.15]`, `x0 = fill(0.09, 2)`.
+Experimento gêmeo em dimensão 2: `x_otimo = [0.2, 0.15]`, `x0 = fill(0.25, 2)`.
 Ver [`comparar_solvers_pregerado`](@ref).
 """
 function comparar_solvers_twin_dim2(;
@@ -1382,7 +1405,7 @@ end
     comparar_solvers_twin_dim10(; kwargs...)
 
 Experimento gêmeo em dimensão 10: `x_otimo = range(0.12, 0.07, length=10)`
-(perfil **decrescente**), `x0 = fill(0.09, 10)`. Perfis crescentes de Manning
+(perfil **decrescente**), `x0 = fill(0.25, 10)`. Perfis crescentes de Manning
 ao longo do trecho (rugosidade menor a montante, maior a jusante) divergem
 antes de `tend=31` mesmo com variação pequena — testado manualmente com
 várias faixas (`0.06`–`0.14`, `0.07`–`0.12`, `0.075`–`0.105`, `0.08`–`0.10`,
@@ -1411,7 +1434,7 @@ end
 """
     comparar_solvers_real_dim2(; kwargs...)
 
-Dados reais em dimensão 2: `x0 = fill(0.09, 2)`. Ver
+Dados reais em dimensão 2: `x0 = fill(0.25, 2)`. Ver
 [`comparar_solvers_real`](@ref) — inclui, além do CSV principal, um segundo
 CSV (`points_output`) com todos os pontos aceitos de cada método.
 """
@@ -1437,7 +1460,7 @@ end
 """
     comparar_solvers_real_dim10(; kwargs...)
 
-Dados reais em dimensão 10: `x0 = fill(0.09, 10)`. Ver [`comparar_solvers_real`](@ref).
+Dados reais em dimensão 10: `x0 = fill(0.25, 10)`. Ver [`comparar_solvers_real`](@ref).
 """
 function comparar_solvers_real_dim10(;
     x0::AbstractVector = fill(0.25, 10),
@@ -1519,7 +1542,7 @@ end
 
 Roda só o `ffjm2` nos 4 cenários de parâmetro das tabelas de comparação —
 twin dim 2 (`x_otimo=[0.2,0.15]`), twin dim 10 (`x_otimo` decrescente de
-`0.12` a `0.07`), dados reais dim 3 e dados reais dim 10 (`x0=fill(0.09,·)`
+`0.12` a `0.07`), dados reais dim 3 e dados reais dim 10 (`x0=fill(0.25,·)`
 em todos) — com os mesmos valores usados pelos presets
 `comparar_solvers_twin_dim2`/`comparar_solvers_twin_dim10`/
 `comparar_solvers_real_dim10` (o cenário "real dim3" não tem mais preset
@@ -1540,10 +1563,10 @@ function rodar_ffjm2_quatro_cenarios(;
     ffjm2_options = (;),
 )
     cenarios = (
-        (nome = "twin dim2", tipo = :twin, x_otimo = [0.2, 0.15], x0 = fill(0.09, 2)),
-        (nome = "twin dim10", tipo = :twin, x_otimo = collect(range(0.12, 0.07, length = 10)), x0 = fill(0.09, 10)),
-        (nome = "real dim3", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 3)),
-        (nome = "real dim10", tipo = :real, x_otimo = nothing, x0 = fill(0.09, 10)),
+        (nome = "twin dim2", tipo = :twin, x_otimo = [0.2, 0.15], x0 = fill(0.25, 2)),
+        (nome = "twin dim10", tipo = :twin, x_otimo = collect(range(0.12, 0.07, length = 10)), x0 = fill(0.25, 10)),
+        (nome = "real dim3", tipo = :real, x_otimo = nothing, x0 = fill(0.25, 3)),
+        (nome = "real dim10", tipo = :real, x_otimo = nothing, x0 = fill(0.25, 10)),
     )
 
     resultados = NamedTuple[]

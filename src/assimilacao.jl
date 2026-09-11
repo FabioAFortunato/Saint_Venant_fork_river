@@ -7,7 +7,7 @@ ENV["GKSwstype"] = get(ENV, "GKSwstype", "100")
 using PGFPlotsX
 using Plots
 
-pgfplotsx()
+gr()
 
 include("obj_func.jl")
 include("aux_func.jl")
@@ -602,7 +602,7 @@ function sv_fork_new(
     
     if plot_bool
         televa .= televa./(24.0*60*60)   
-        pgfplotsx() 
+        gr() 
   
         # Definir passo para amostragem
           step = 20
@@ -809,7 +809,7 @@ function plot_assimilation_heatmap_from_data(
     rmsd_max = 3.0,
     output = nothing,
 )
-    pgfplotsx()
+    gr()
 
     p = heatmap(
         n1,
@@ -1062,7 +1062,7 @@ function plot_heatmap_bfgs_default_assimilacao(;
     xs = [p[1] for p in bfgs.pontos]
     ys = [p[2] for p in bfgs.pontos]
 
-    pgfplotsx()
+    gr()
 
     p = heatmap(
         heat.n1,
@@ -1150,7 +1150,7 @@ function plot_curvas_nivel_assimilacao_1d(;
 
     RMSD = [rmsd_no_ponto([n]) for n in grid]
 
-    pgfplotsx()
+    gr()
 
     p = plot(
         grid,

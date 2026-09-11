@@ -268,7 +268,6 @@ function plot_assimilacao_heatmap_tend_31_latex(;
     rmsd_max = 2.0,
     tamanho = (700, 600),
 )
-    Plots.gr()
     heat = le_assimilation_heatmap_matrix(matrix_output)
     min_idx = argmin(heat.RMSD)
     n1_min = heat.n1[min_idx[2]]
@@ -276,25 +275,27 @@ function plot_assimilacao_heatmap_tend_31_latex(;
     rmsd_min = heat.RMSD[min_idx]
     Z_plot = map(v -> isfinite(v) && v <= rmsd_max ? v : NaN, heat.RMSD)
 
-    # `contourf` (em vez de `heatmap` + `contour!` sobreposto): além do
-    # `contour!` sobreposto ser pouco confiável para desenhar linhas junto
-    # de um `heatmap` no mesmo eixo, os níveis de `heat.RMSD` (sem o corte
-    # em `rmsd_max`) tendem a se concentrar nos poucos pontos com RMSD muito
-    # alto (ex.: solver divergiu), deixando quase nenhum nível dentro da
-    # faixa `[0, rmsd_max]` realmente visível no heatmap — por isso viam-se
-    # só 1-2 curvas. Usar `Z_plot` (já saturado em `rmsd_max`) com níveis
-    # igualmente espaçados nessa faixa resolve os dois problemas de uma vez.
-    p = Plots.contourf(
+    # Ticks da colorbar a cada 0.25 (0, 0.25, ..., rmsd_max), igual ao
+    # espaçamento de `assimilacao_heatmap_tend_31_latex_bfgs_aceitos.pdf`
+    # (versão antiga, backend `gr()`). O rótulo de cada tick fica sem os
+    # zeros à direita ("0", "0.25", "1", ...) em vez de "0.00", "0.25",
+    # "1.00": `colorbar_formatter` (o atributo que controlaria isso) não é
+    # respeitado pelo backend `pgfplotsx()` para heatmaps — tentativa
+    # confirmada, sem efeito no PDF gerado.
+    colorbar_tick_valores = collect(0.0:0.25:rmsd_max)
+
+    # Mesmo estilo visual de `plot_assimilation_rmsd_heatmap_pregerado`
+    # (`plots.jl`, experimento gêmeo): `heatmap` liso com as curvas de
+    # nível sobrepostas via `Plots.contour!` nativo.
+    p = Plots.heatmap(
         heat.n1,
         heat.n2,
         Z_plot;
         xlabel = "Manning coefficient x1",
         ylabel = "Manning coefficient x2",
-        colorbar_title = L"\mathrm{RMSD}",
+        colorbar_title = "RMSD",
         clim = (0.0, rmsd_max),
-        levels = range(0.0, rmsd_max, length = 13),
-        linewidth = 1.0,
-        linecolor = :black,
+        colorbar_ticks = colorbar_tick_valores,
         aspect_ratio = :equal,
         xlims = (minimum(heat.n1), maximum(heat.n1)),
         ylims = (minimum(heat.n2), maximum(heat.n2)),
@@ -314,6 +315,21 @@ function plot_assimilacao_heatmap_tend_31_latex(;
         markercolor = :gold,
         markerstrokecolor = :black,
         label = "Yellow region = NaN",
+    )
+
+    # `Plots.contour!` nativo do backend `gr()` (em vez do `_desenha_curvas_nivel!`
+    # "na mão" via Contour.jl, workaround que só era necessário para o
+    # backend `pgfplotsx()`, cujo recipe de contorno não renderizava as
+    # linhas de forma confiável). 13 níveis, como o antigo `plot_calor_bfgs.pdf`.
+    Plots.contour!(
+        p,
+        heat.n1,
+        heat.n2,
+        Z_plot;
+        levels = range(0.0, rmsd_max, length = 13),
+        linecolor = :black,
+        linewidth = 1.0,
+        colorbar_entry = false,
     )
 
     Plots.scatter!(
