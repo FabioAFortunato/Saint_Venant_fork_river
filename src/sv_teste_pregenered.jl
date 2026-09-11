@@ -1392,7 +1392,7 @@ todas crescentes, todas divergiram). Perfis decrescentes na mesma ordem de
 grandeza são estáveis. Ver [`comparar_solvers_pregerado`](@ref).
 """
 function comparar_solvers_twin_dim10(;
-    x_otimo::AbstractVector = collect(range(0.12, 0.07, length = 10)),
+    x_otimo::AbstractVector = collect(range(0.2, 0.15, length = 10)),
     x0::AbstractVector = fill(0.25, 10),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
@@ -1650,8 +1650,8 @@ o traço iteração a iteração (`show_trace=true` por padrão) — mesma ideia
 reais, pra acompanhar de perto o comportamento do algoritmo nesse cenário.
 """
 function acompanhar_ffjm2_twin_dim10(;
-    x_otimo::AbstractVector = collect(range(0.12, 0.07, length = 10)),
-    x0::AbstractVector = fill(0.09, 10),
+    x_otimo::AbstractVector = collect(range(0.2, 0.15, length = 10)),
+    x0::AbstractVector = fill(0.25, 10),
     tbeg::Real = 0.0,
     tend::Real = 31.0,
     update::Union{Symbol,Tuple{Vararg{Symbol}}} = :psb,
@@ -1673,6 +1673,7 @@ end
 
 
 function excluir_depois()
+    comparar_solvers_twin_dim2()
     comparar_solvers_twin_dim10()
     return 10
 end

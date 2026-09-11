@@ -750,6 +750,8 @@ mentioning, while reaching that solution at a significantly lower cost.
 
 \section{Coefficient estimation problem} \label{cap:coeficient_estimation}
 
+\subsection{The Saint-Venant model and the calibration problem}
+
 The Saint-Venant equations \cite{castro,leveque,porto,saintvenant} 
   describe the flow of fluids in natural channels. The state variables that describe a natural channel vary
   with respect to $x \in [x_{min}, x_{max}]$ (position, usually measured  in meters) and $t \in [t_{min},t_{max}]$ (time, usually
@@ -861,7 +863,7 @@ consistent with the model).
 
 
 
-\subsection{Results in a coefficient estimation problem}
+\subsection{Experimental setup}
 To calibrate $\theta$ against this residual, four benchmark scenarios
 compare the same three solvers used throughout this report, namely BFGS
 (backtracking, order 2), BOBYQA, and Algorithm~\ref{complexity}, applied
@@ -943,7 +945,7 @@ solver:
 \end{enumerate}
 
 
-\subsubsection{Results}
+\subsection{Results}
 
 \begin{table}[htbp]
 \centering
