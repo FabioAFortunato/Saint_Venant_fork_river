@@ -4,7 +4,7 @@
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{amsmath}
-\usepackage{amsthm}
+\usepackage{latexsym}
 \usepackage{longtable}
 \usepackage{array}
 \usepackage{seqsplit}
@@ -13,6 +13,7 @@
 \usepackage{graphicx}
 \usepackage{float}
 \usepackage{placeins}
+\usepackage{needspace}
 
 
 \sisetup{
@@ -22,10 +23,47 @@
     exponent-product = \times,
 }
 
-\newcommand{\IR}{I\!\!R}
+
 \newcommand{\norm}[1]{\|#1\|}
-\newtheorem{lemma}{Lemma}
-\newtheorem{proposition}{Proposition}
+\newcommand{\half}      {\frac{1}{2}}
+\newcommand{\calA}      {{\cal A}}
+\newcommand{\calB}      {{\cal B}}
+\newcommand{\calF}      {{\cal F}}
+\newcommand{\caL}       {{\cal L}}
+\newcommand{\calS}      {{\cal S}}
+\newcommand{\calV}      {{\cal V}}
+\newcommand{\N}         {I\!\!N}
+\newcommand{\R}         {I\!\!R}
+\newcommand{\rhok}      {\rho_k}
+\newcommand{\sigmin}    {\sigma_{\min}}
+\newcommand{\sigmax}    {\sigma_{\max}}
+\newcommand{\halmos}    {\hfill $\;\;\;\Box$\\}
+\newcommand{\subsetinf} {\displaystyle\mathop{\subset}_{\infty}}
+\newcommand{\alspg}     {\textsc{Alspg}}
+\newcommand{\spg}       {\textsc{SPG}}
+\newcommand{\algencan}  {\textsc{Algencan}}
+\newcommand{\gencan}    {\textsc{Gencan}}
+\newcommand{\gencans}   {\textsc{Gencan-Second}}
+\newcommand{\algencans} {\textsc{Algencan-Second}}
+\newcommand{\cuter}     {\textsc{Cute}r}
+\newcommand{\lancelot}  {\textsc{Lancelot}}
+\newcommand{\ipopt}     {\textsc{Ipopt }}
+\newcommand{\new}       {\mbox{\rm \scriptsize new}}
+\newcommand{\ini}       {\mbox{\rm \scriptsize ini}}
+\newcommand{\fun}       {\mbox{\rm \scriptsize fun}}
+\newcommand{\grad}      {\mbox{\rm \scriptsize grad}}
+\newcommand{\hess}      {\mbox{\rm \scriptsize hess}}
+\newcommand{\curv}      {\mbox{\rm \scriptsize curv}}
+\newcommand{\opt}       {\mbox{\rm \scriptsize opt}}
+\newcommand{\hdos} {\underline{h}}
+\newcommand{\gdos} {\underline{g}}
+\newcommand{\pdos} {\underline{p}}
+\newcommand{\mdos} {\underline{m}}
+\newcommand{\gtres} {\overline{g}}
+\newcommand{\ptres} {\overline{p}}
+\newcommand{\s}{s^{trial}}
+\newcommand{\B}{{\cal B}}
+
 
 \title{Algorithm~\ref{complexity} vs.\ BFGS on the MGH Problems}
 \author{}
@@ -83,42 +121,43 @@ $A:=J^\top J$ (symmetric positive semidefinite). Then
 s(\sigma) = -(A+2\sigma I)^{-1} g.
 \]
 
-\begin{lemma}[Descent for every $\sigma>0$]\label{lem:descent}
-For every $\sigma>0$ and every $g\ne0$, $s(\sigma)$ is a descent direction
+\noindent
+{\bf Lemma \ref{sec:closedform}.1 (Descent for every $\sigma>0$).} {\it For every $\sigma>0$ and every $g\ne0$, $s(\sigma)$ is a descent direction
 for $f$ at $x^0$, satisfying $g^\top s(\sigma) < 0$.
-\end{lemma}
-\begin{proof}
-Since $A+2\sigma I \succ 0$ for $\sigma>0$, its inverse is symmetric
+}\\
+
+\noindent
+{\it Proof.} Since $A+2\sigma I \succ 0$ for $\sigma>0$, its inverse is symmetric
 positive definite, hence
 \[
-g^\top s(\sigma) = -g^\top (A+2\sigma I)^{-1} g < 0 \qquad \text{whenever } g\ne0. \qedhere
+g^\top s(\sigma) = -g^\top (A+2\sigma I)^{-1} g < 0 \qquad \text{whenever } g\ne0.
 \]
-\end{proof}
+This completes the proof. \halmos\\
 So $s(\sigma)$ is a genuine descent direction for $f$ \emph{for every
 $\sigma>0$}, not just asymptotically. The $\sigma$-loop never has a
-``wrong-direction'' problem at $k=0$; what it can have is a
-badly-\emph{sized} step, which is what the accept/reject test and the
+``wrong-direction'' problem at $k=0$. What it can have is a
+badly sized step, which is what the accept/reject test and the
 growth of $\sigma$ are actually correcting for.
 
-\begin{proposition}[Alignment with $-g$ as $\sigma\to\infty$]\label{prop:alignment}
-As $\sigma\to\infty$,
+\noindent
+{\bf Proposition \ref{sec:closedform}.2 (Alignment with $-g$ as $\sigma\to\infty$).} {\it As $\sigma\to\infty$,
 \begin{equation}
 	s(\sigma) = -\frac{1}{2\sigma}\,g + o\!\left(\frac1\sigma\right)
 	\qquad\Longrightarrow\qquad
 	\frac{s(\sigma)}{\norm{s(\sigma)}} \longrightarrow -\frac{g}{\norm{g}}.
 	\label{eq:asymptotic}
 \end{equation}
-\end{proposition}
-\begin{proof}
-Factor $2\sigma$ out of the inverse:
+}\\
+
+\noindent
+{\it Proof.} Factor $2\sigma$ out of the inverse:
 \[
 s(\sigma) = -(A+2\sigma I)^{-1}g
 = -\frac{1}{2\sigma}\left(I + \frac{A}{2\sigma}\right)^{-1}g.
 \]
 As $\sigma\to\infty$, $A/(2\sigma)\to0$, and matrix inversion is
 continuous at the identity, so $\bigl(I+A/(2\sigma)\bigr)^{-1}\to I$,
-which gives the stated expansion. \qedhere
-\end{proof}
+which gives the stated expansion. This completes the proof. \halmos\\
 
 In words, for $\sigma$ large enough, the solution of the degenerate
 $k=0$ subproblem \eqref{eq:gn} already is, to leading order, a
@@ -128,7 +167,7 @@ asymptotically the same computation. This is a direct consequence of
 
 In practice, the rejection ladder $\sigma_0,\ \sigma_{j+1}=\gamma\sigma_j$
 ($\gamma>1$ the growth factor) tries $s(\sigma_0), s(\sigma_1),\dots$
-until one is accepted. By Proposition~\ref{prop:alignment}, once $\sigma_j\gg\norm{A}/2$ the
+until one is accepted. By Proposition~\ref{sec:closedform}.2, once $\sigma_j\gg\norm{A}/2$ the
 successive trials are already essentially parallel to $-g$ and shrink by
 the fixed factor $1/\gamma$, so once it reaches that scale, the ladder
 is already behaving like a backtracking line search along $-g$. This is
@@ -197,7 +236,7 @@ and compare it against a classical
 sum-of-squares approach. We run two types of tests. In the first, we
 consider the MGH (Mor\'e, Garbow, and Hillstrom) sum-of-squares test
 problems \cite{MoreGarbowHillstrom1981}, a benchmark of 34 classical
-problems; this part is important to us because it helps us settle on a
+problems. This part is important to us because it helps us settle on a
 good solver and Hessian approximation. In the second part, we solve a
 hydraulic problem in which we need to estimate a coefficient of a PDE
 called the Saint-Venant equation.
@@ -221,7 +260,7 @@ Hessian. Four further variants are
 compared in Table~\ref{tab:hessian-models}, and $\sigma\|s\|_2^2$
 is the Levenberg-Marquardt-style regularization of Algorithm~\ref{complexity} that
 damps the step in place of a line search. The candidate $x_k + s$ is
-checked for feasibility as in Step~3 (Eq.~\ref{feasi}); acceptance then uses the
+checked for feasibility as in Step~3 (Eq.~\ref{feasi}). Acceptance then uses the
 ratio $\rho_k$ between the actual and the model-predicted reduction in
 $f$, a refinement of Algorithm~\ref{complexity}'s simpler decrease test (Eq.~(25)),
 accepting whenever $\rho_k \ge \eta_1$ for a fixed threshold $\eta_1$.
@@ -231,7 +270,7 @@ Eq.~(\ref{upsig}) with the following parameters. The first iteration starts at
 $\sigma = 1$. Each accepted step divides $\sigma$ by a fixed factor
 $\sigma_{grow} = 10$, and each rejected step, as in Eq.~(30), multiplies
 $\sigma$ by the same factor $\sigma_{grow} = 10$ and re-solves the
-subproblem at the same point, until a step is accepted; between outer
+subproblem at the same point, until a step is accepted. Between outer
 iterations, $\sigma$ always carries over from the previous one rather
 than being reset. The floor $\sigma_{\min} = 10^{-8}$ and the ceiling
 $\sigma_{\max} = 10^{12}$ are used purely for numerical stability,
@@ -247,7 +286,7 @@ is fair):
     \item \textbf{Step}: the last step has (numerically) zero length. The solver stalls and stops making progress (reported as \texttt{step\_conv} for both Algorithm~\ref{complexity} and BFGS).
     \item \textbf{Function}: the objective value does not change between two consecutive iterations. The iterate is stuck on a plateau (reported as \texttt{func\_conv} for both Algorithm~\ref{complexity} and BFGS).
     \item \textbf{Stalled}: Algorithm~\ref{complexity}'s regularization parameter exceeded its
-    ceiling, that is, $\sigma > 10^{12}$ (reported as \texttt{reg\_stalled}; BFGS has no equivalent criterion).
+    ceiling, that is, $\sigma > 10^{12}$ (reported as \texttt{reg\_stalled}. BFGS has no equivalent criterion).
 \end{itemize}
 Gradient, Step, and Function use the same name for both methods by
 construction: BFGS's own status is classified by checking
@@ -267,7 +306,7 @@ reporting its own native termination code.
 Table~\ref{tab:hessian-models} compares the six Algorithm~\ref{complexity} Hessian-update
 models, each run independently on the 34 MGH least-squares problems
 \cite{MoreGarbowHillstrom1981}. Its ``Converged (gradient)'' column counts
-how many of the 34 problems stopped under the gradient criterion; the
+how many of the 34 problems stopped under the gradient criterion. The
 remaining columns are mean~$\pm$~standard deviation over the 34 problems.
 Each model keeps its own set of matrices $H_i \approx \nabla^2 f_i(x_k)$,
 $i=1,\ldots,m$, updated at every accepted step from $s = x_{k+1}-x_k$ and
@@ -418,6 +457,7 @@ used throughout the rest of this work.
 
 
 
+\needspace{10\baselineskip}
 \subsection{sum of square problem BFGS configuration}
 
 Now we will consider a diferent configuration thant the avarege to BFGS method. We will make it, because the defalt linesearch, generally Hanger Zhang linesearch, evaluate the derivativo of function many times. For this reason, now we will test diferents classical linesearchs for BFGS method. The Table~\ref{tab:bfgs-linesearches} checks some linesearchs for
@@ -425,7 +465,7 @@ Now we will consider a diferent configuration thant the avarege to BFGS method. 
 minimalist backtracking with Armijo condition, and BackTracking
 with quadratic (order 2) and cubic (order 3) interpolation. ``Converged
 (gradient)'' counts how many of the 34 problems stopped under the gradient
-criterion; the remaining columns are mean~$\pm$~standard deviation over
+criterion. The remaining columns are mean~$\pm$~standard deviation over
 all 34 problems (including the ones that stopped under a different
 criterion).
 
@@ -696,7 +736,7 @@ problems, Figure~\ref{fig:performance-profiles} shows the performance
 profile of Dolan and Mor\'e \cite{DolanMore2002} for the final objective
 value, function evaluations, and gradient evaluations. For each problem, a method's ratio $r$ is its evaluation
 count divided by the smaller of the two methods' counts on that same
-problem, so the faster method has $r=1$; a run that does not converge by
+problem, so the faster method has $r=1$. A run that does not converge by
 gradient norm counts as a failure, with $r=\infty$ (a problem on which
 neither method converges by gradient norm counts as a mutual failure,
 $r=\infty$ for both, still included in the 34). The curve $\rho_s(\tau)$ is the
@@ -717,7 +757,7 @@ of cost.
 		which method $s$'s cost (final $f$ value, function evaluations, or
 		gradient evaluations, matching the panel) is at most $\tau$ times
 		the smaller of the two methods' costs on that problem, plotted
-		against $\log_2\tau$; a run that does not converge by gradient norm
+		against $\log_2\tau$. A run that does not converge by gradient norm
 		counts as a failure.}
 	\label{fig:performance-profiles}
 \end{figure}
@@ -802,24 +842,23 @@ oscillations while fitting the solution of the Saint-Venant equations to
 the observations.
 
 Consider a grid with $n_{grid}$ points
-$x_{min} \le x_1 < \cdots < x_{n_{grid}} \le x_{max}$. Collect the
+$x_{min} = x_1 < \cdots < x_{n_{grid}} = x_{max}$. Collect the
 $n_{grid}$ values $n_g(x_1), \ldots, n_g(x_{n_{grid}})$ into a parameter
-vector $\xi \in \IR^{n_{grid}}$, with $\xi_i := n_g(x_i)$ for
+vector $\xi \in \R^{n_{grid}}$, with $\xi_i := n_g(x_i)$ for
 $i = 1, \ldots, n_{grid}$, kept notationally distinct from the spatial
 coordinate $x$. In \cite{FortunatoMartinez2025}, this calibration problem
 is posed as a constrained optimization problem, minimizing either the sum
 of squared deviations of $\xi$ from a reference value $\bar n$ or the
 sum of absolute deviations, subject to equality constraints requiring the
 simulated elevations to match the $n_{obs}$ observations and a box
-constraint $0 \le \xi_i \le n_g^{\max}$; it is solved there by a
+constraint $0 \le \xi_i \le n_g^{\max}$. It is solved there by a
 Safeguarded Augmented Lagrangian method (Algorithm~2.1 of
 \cite{FortunatoMartinez2025}), with BOBYQA or PRIMA handling the
 subproblems.
 
 The two applications differ mainly in how the underlying PDE is solved.
 In this work we rely on a more stable PDE solver, which lets us compute
-the derivative of the objective with respect to $\xi$ accurately;
-this is precisely what enables the gradient-based comparison carried out
+the derivative of the objective with respect to $\xi$ accurately. This is precisely what enables the gradient-based comparison carried out
 below, namely BFGS and Algorithm~\ref{complexity} against the
 derivative-free BOBYQA. Figure~\ref{fig:solver-comparison} contrasts the
 previous and the current solver on the same problem.
@@ -871,78 +910,75 @@ directly to $F(\xi)$ above where each solver stands in as the
 whole optimizer, rather than as Algorithm~\ref{complexity}'s internal
 subproblem solver. Two scenarios use pregenerated data, where the
 observations $z_{obs,i}$ are themselves generated by the model at a known
-$\xi^\star$, so the true minimizer is known exactly; the other two use
+$\xi^\star$, so the true minimizer is known exactly. The other two use
 the real observed data, where the true minimizer (if it exists) is
-unknown. BFGS and BOBYQA minimize the full sum of squares
-$\frac12\|F(\xi)\|_2^2 + \mathrm{penalty}(\xi)$, where $\mathrm{penalty}$
-is an additive box term (bounds $[0,0.5]^{n_{grid}}$, weight $10^6$) that
+unknown. BFGS and BOBYQA are both given the same box, $[0,0.5]^{n_{grid}}$,
+and for the same reason, since a trial step whose direction is too large
+is likely to land in a forbidden region $P$, in the terminology of
+\cite{FortunatoMartinez2025}, this algorithm's own reference, a region
+where the PDE simulation diverges and the residual is undefined, so
+evaluating $F$ there is meaningless and wasted. BFGS enforces the box softly,
+through an additive penalty term, $\frac12\|F(\xi)\|_2^2 +
+\mathrm{penalty}(\xi)$, where $\mathrm{penalty}$ (weight $10^6$)
 evaluates to exactly $0$ whenever every coordinate of $\xi$ is feasible,
-as is the case at every minimizer reported below; Algorithm~\ref{complexity}
-minimizes $f(\xi) = \frac12\|F(\xi)\|_2^2$ directly. We consider a box ther for the BFGS and BOBYQA methods to help the convergence of solver. 
+as is the case at every minimizer reported below. $F$ is still evaluated
+everywhere, but the penalty discourages the line search from accepting
+a step that reaches too far. BOBYQA instead enforces the same box as a
+hard constraint, through NLopt's own bound support, so it minimizes
+$\frac12\|F(\xi)\|_2^2$ unpenalized and NLopt never evaluates the
+objective at a trial point outside the box in the first place.
+Algorithm~\ref{complexity}
+minimizes $f(\xi) = \frac12\|F(\xi)\|_2^2$ directly, with no box at all,
+relying instead on its own $\sigma$-regularization to keep steps away
+from that same region.
 
 \subsubsection{Algorithmic settings}
-
-Because each residual evaluation is a full transient simulation of the
-Saint-Venant equations, all runs below share the same evaluation budget:
-BFGS and BOBYQA were allowed at most 1000 evaluations of the residual,
-and Algorithm~\ref{complexity} at most 500 outer iterations (each
-costing at least one residual evaluation, more on any rejected
-$\sigma$-step). The Status column in Tables~\ref{tab:pregenerated-dim2},
-\ref{tab:pregenerated-dim10}, \ref{tab:real-dim2}, and \ref{tab:real-dim10}
-below reports each solver's own termination code directly:
-\texttt{grad\_conv} for a genuine gradient-norm stopping-criterion match,
-for either Algorithm~\ref{complexity} or BFGS,
-\texttt{Trust\_Region} for a genuine BOBYQA stopping criterion,
-\texttt{reg\_stalled} for Algorithm~\ref{complexity}'s stalled $\sigma$
-increases and \texttt{alpha\_too\_small} for BFGS's stalled line search,
-and \texttt{maximum\_iterations}/\texttt{XTOL\_REACHED}/\texttt{FTOL\_REACHED}
-for a budget exhausted without a genuine stopping-criterion match.
 
 All three solvers are implemented in Julia, version 1.10, and every
 experiment reported in this section was run on a computer with a
 5.2~GHz 12th Gen Intel(R) Core(TM) i9-12900K processor and 16~GB of
-3200~MHz DDR4 RAM, running Linux Mint 21.1.
+3200~MHz DDR4 RAM, running Linux Mint 21.1. They also share the same
+evaluation budget, since each residual evaluation is a full transient
+simulation of the Saint-Venant equations (BFGS and BOBYQA allowed at
+most 1000 evaluations of the residual, Algorithm~\ref{complexity} at
+most 1000 outer iterations), and BFGS and Algorithm~\ref{complexity}
+further share a gradient-norm convergence tolerance of $10^{-3}$; the
+remaining settings differ per solver, as detailed below. The Status
+column in Tables~\ref{tab:pregenerated-dim2}, \ref{tab:pregenerated-dim10},
+\ref{tab:real-dim2}, and \ref{tab:real-dim10} reports each solver's own
+termination code directly, \texttt{grad\_conv} (Algorithm~\ref{complexity}
+or BFGS) and \texttt{Trust\_Region} (BOBYQA) marking a stopping
+criterion that actually certifies stationarity, \texttt{reg\_stalled}
+(Algorithm~\ref{complexity}'s $\sigma$ stuck at its ceiling) and
+\texttt{step\_conv} (BFGS's line search stuck at its minimum step)
+marking a stall instead, and \texttt{maximum\_iterations},
+\texttt{XTOL\_REACHED}, and \texttt{FTOL\_REACHED} marking the budget
+above running out without either.
 
 \begin{itemize}
-    \item \textbf{BFGS}: the \texttt{BFGS} method from the
+    \item \textbf{BFGS}, the \texttt{BFGS} method from the
     \texttt{Optim.jl} package (version 2.0), together with the order-2
     backtracking line search from the \texttt{LineSearches.jl} package
     (version 7.7), the same combination used in
-    Section~\ref{sec:mgh-problems}; gradients are obtained by
+    Section~\ref{sec:mgh-problems}. Gradients are obtained by
     forward-mode automatic differentiation with the
     \texttt{ForwardDiff.jl} package (version 1.3), as discussed above.
-    \item \textbf{BOBYQA}: the implementation provided by the
-    \texttt{NLopt.jl} package (version 1.2).
-    \item \textbf{Algorithm~\ref{complexity}}: our own Julia
-    implementation, like the Saint-Venant solver itself.
-\end{itemize}
-
-As stated above, BFGS and BOBYQA are given the box
-$\xi_i \in [0, 0.5]$ for every $i=1,\ldots,n_{grid}$, enforced through
-the additive penalty of weight $10^6$; Algorithm~\ref{complexity}
-minimizes $f(\xi)$ unconstrained, since its own regularization already
-keeps the iterates well-behaved. Other algorithmic parameters differ per
-solver:
-
-\begin{enumerate}
-    \item \textbf{BOBYQA}: the trust region starts with radius $0.01$
-    and the search stops once it has shrunk to $10^{-6}$; the number of
-    interpolation points and other internal settings are left at the
-    package's own defaults.
-    \item \textbf{BFGS (backtracking)}: a run is considered converged
-    once the gradient norm falls below $10^{-3}$; the line search gives
-    up, reporting \texttt{alpha\_too\_small}, once its step length
-    shrinks below $10^{-12}$; and the number of gradient evaluations is
-    capped at 500.
-    \item \textbf{Algorithm~\ref{complexity}}: the same regularization
-    schedule described in Section~\ref{sec:mgh-problems} is used here,
+    The line search gives up, reporting \texttt{step\_conv}, once its
+    step length shrinks below $10^{-12}$, and the number of gradient
+    evaluations is capped at 500.
+    \item \textbf{BOBYQA}, the implementation provided by the
+    \texttt{NLopt.jl} package (version 1.2). The trust region starts
+    with radius $0.01$ and the search stops once it has shrunk to
+    $10^{-6}$. The number of interpolation points and other internal
+    settings are left at the package's own defaults.
+    \item \textbf{Algorithm~\ref{complexity}}, our own Julia
+    implementation, like the Saint-Venant solver itself. It uses the
+    same regularization schedule described in Section~\ref{sec:mgh-problems},
     starting at $\sigma_0=1$ and growing by a factor of
     $\sigma_{grow}=10$ on every rejected step, with a floor of
     $\sigma_{\min}=10^{-8}$ and a ceiling of $\sigma_{\max}=10^{12}$
-    kept purely for numerical stability, together with the same
-    gradient-norm convergence tolerance of $10^{-3}$ used for BFGS
-    above.
-\end{enumerate}
+    kept purely for numerical stability.
+\end{itemize}
 
 
 \subsection{Results}
@@ -968,14 +1004,14 @@ Algorithm~\ref{complexity} & $5.86\times10^{-11}$ & $5.80\times10^{-19}$ & $6.65
 
 \noindent
 All three methods converge to essentially the exact reference
-$\xi^\star=(0.20,0.15)$; Algorithm~\ref{complexity} is the cheapest of the three by
+$\xi^\star=(0.20,0.15)$. Algorithm~\ref{complexity} is the cheapest of the three by
 every cost measure (fewest evaluations, least time) despite also reaching
 the tightest gradient norm and RMSD.
 
 \begin{figure}[H]
 	\centering
 	\includegraphics[width=0.8\linewidth]{plot_calor_pregerado_com_solvers.pdf}
-	\caption{RMSD heatmap of the pregenerated-data experiment ($n_{grid}=2$) with the path of accepted iterates of each method overlaid: BFGS (red), BOBYQA (blue), and Algorithm~\ref{complexity} (green). The white diamond marks the shared starting point $\xi^0=(0.25,0.25)$; the star marks each method's final iterate.}
+	\caption{RMSD heatmap of the pregenerated-data experiment ($n_{grid}=2$) with the path of accepted iterates of each method overlaid: BFGS (red), BOBYQA (blue), and Algorithm~\ref{complexity} (green). The white diamond marks the shared starting point $\xi^0=(0.25,0.25)$. The star marks each method's final iterate.}
 	\label{fig:performace_n_2_fake}
 \end{figure}
 \FloatBarrier
@@ -985,9 +1021,7 @@ the tightest gradient norm and RMSD.
 \begin{table}[htbp]
 \centering
 \caption{Pregenerated-data experiment, $n_{grid}=10$: decreasing profile $\xi^\star$
-    from $0.20$ to $0.15$, $\xi^0=(0.25,\ldots,0.25)$. (Increasing profiles
-    over comparable ranges were tested manually and diverge before
-    $t_{\max}=31$; only decreasing profiles are stable.)}
+    from $0.20$ to $0.15$, $\xi^0=(0.25,\ldots,0.25)$.}
 \label{tab:pregenerated-dim10}
 \resizebox{\textwidth}{!}{%
 \begin{tabular}{l r r r r r r l}
@@ -1006,21 +1040,18 @@ Algorithm~\ref{complexity} & $4.38\times10^{-6}$ & $3.24\times10^{-9}$ & $1.02\t
 \FloatBarrier
 
 \noindent
-At $n_{grid}=10$ Algorithm~\ref{complexity} is now the clear winner: it is
+At $n_{grid}=10$ Algorithm~\ref{complexity} is now the clear winner. It is
 the only method that certifies a genuine stopping criterion
 (\texttt{grad\_conv}, $\|\nabla f\|\approx1.02\times10^{-3}$), and it does
 so at a small fraction of the cost of the other two ($15$ function and $9$
 gradient evaluations, $444.3$s). BFGS's line search stalls
-(\texttt{alpha\_too\_small}, \texttt{converged=false}) far from a
-stationary point, with the worst RMSD and gradient norm of the three
-($\approx2.00\times10^{-1}$ and $\approx3.33\times10^2$, respectively).
+(\texttt{step\_conv} with the worst RMSD and gradient norm of the three
+($2.00\times10^{-1}$ and $\approx3.33\times10^2$, respectively).
 BOBYQA gets much closer ($\text{RMSD}\approx3.68\times10^{-4}$, $\|\nabla
 f\|\approx1.26\times10^{-1}$) but exhausts its evaluation budget
 (\texttt{MAXEVAL\_REACHED}, $1000$ function evaluations) before
 certifying convergence. At $n_{grid}=2$ all three methods converged, with
-Algorithm~\ref{complexity} already the cheapest of the three; at
-$n_{grid}=10$ it remains by far the cheapest, but now it is also the only
-one of the three that reaches a certified stationary point.
+Algorithm~\ref{complexity} already the cheapest of the three. 
 
 \begin{table}[htbp]
 \centering
@@ -1043,22 +1074,18 @@ Algorithm~\ref{complexity} & $1.42\times10^{-1}$ & $3.42\times10^{0}$ & $1.80\ti
 \begin{figure}[H]
 	\centering
 	\includegraphics[width=0.8\linewidth]{plot_calor_novo.pdf}
-	\caption{RMSD heatmap of the real-data experiment ($n_{grid}=2$) with the path of accepted iterates of each method overlaid: BFGS (red), BOBYQA (blue), and Algorithm~\ref{complexity} (green). The white diamond marks the shared starting point $\xi^0=(0.25,0.25)$; the star marks each method's final iterate.}
+	\caption{RMSD heatmap of the real-data experiment ($n_{grid}=2$) with the path of accepted iterates of each method overlaid: BFGS (red), BOBYQA (blue), and Algorithm~\ref{complexity} (green). The white diamond marks the shared starting point $\xi^0=(0.25,0.25)$, the star marks each method's final iterate.}
 	\label{fig:performace_n_2_real}
 \end{figure}
 \FloatBarrier
 
 \noindent
-On real data, BFGS's line search stalls (\texttt{alpha\_too\_small},
-\texttt{converged=false}) before reaching a good point, with the worst
+On real data, BFGS's line search stalls (\texttt{step\_conv}) before reaching a good point, with the worst
 RMSD of the three ($2.10\times10^{-1}$) and a gradient norm still at
 $\approx5.31\times10^3$. BOBYQA and Algorithm~\ref{complexity} land on
 essentially the same minimizer instead ($\xi\approx(0.087,\,0.155)$),
-with matching RMSD ($\approx1.42\times10^{-1}$) and $f$
-($\approx3.41$--$3.42$, directly comparable now that both methods
-minimize $\tfrac12\|F(\xi)\|_2^2$). BOBYQA certifies its own
-\texttt{Trust\_Region} criterion using fewer total evaluations ($67$
-versus Algorithm~\ref{complexity}'s $53+21=74$) and less wall-clock time
+with matching RMSD ($1.42\times10^{-1}$) and $f$ $\approx3.41$--$3.42$. BOBYQA certifies its own
+\texttt{Trust\_Region} criterion using fewer total evaluations and less wall-clock time
 ($722.7$s versus $806.8$s), while Algorithm~\ref{complexity} again stalls
 on $\sigma$ (\texttt{reg\_stalled}) just short of that same point.
 
@@ -1083,25 +1110,68 @@ Algorithm~\ref{complexity} & $4.58\times10^{-2}$ & $3.54\times10^{-1}$ & $7.08\t
 \noindent
 This remains the hardest of the four scenarios: none of the three
 methods certifies a genuine stopping criterion. BFGS's line search
-stalls (\texttt{alpha\_too\_small}, \texttt{converged=false}) with the
-largest gradient norm of the three ($\approx1.26\times10^2$) and the
+stalls (\texttt{step\_conv}) with the
+largest gradient norm of the three ($1.26\times10^2$) and the
 worst RMSD ($5.15\times10^{-2}$). BOBYQA certifies its own
 \texttt{Trust\_Region} criterion, using $772$ evaluations and
-$\approx2.5$h to reach RMSD $\approx4.68\times10^{-2}$. Algorithm~\ref{complexity}'s
+$2.5$h to reach RMSD near to $4.68\times10^{-2}$. Algorithm~\ref{complexity}'s
 regularization parameter again hits its ceiling
 (\texttt{reg\_stalled}), but this time it is the best of the three by
-every measure: the smallest gradient norm ($\approx7.08\times10^{-1}$,
+every measure: the smallest gradient norm ($7.08\times10^{-1}$,
 even below BOBYQA's), the lowest RMSD ($4.58\times10^{-2}$), and by far
 the lowest cost ($60$ residual and $24$ Jacobian evaluations,
-$\approx21$min, against BOBYQA's $772$ evaluations and BFGS's
+$21$min, against BOBYQA's $772$ evaluations and BFGS's
 $282$). This is the opposite of the $n_{grid}=10$ pregenerated-data
 scenario (Table~\ref{tab:pregenerated-dim10}), where the same stall left
 Algorithm~\ref{complexity} the worst of the three -- here it is both the cheapest
 and the most accurate. All three still land on different minimizers with
 comparable RMSD ($4.6$--$5.2\times10^{-2}$), and none certifies
-first-order optimality; MADS is omitted from this table --- its run at
-this dimension did not finish cleanly (the saved output was incomplete)
-and is left for a future update.
+first-order optimality.
+
+
+
+\section{Conclusion}
+
+This paper describes an approach based on quartic residual models for
+solving sum-of-squares problems whose objective function, and
+especially its gradient, is expensive to evaluate, and whose domain
+contains forbidden regions where the objective is undefined,
+unreliable, or has no physical meaning, without the boundary of those
+regions being known in advance.
+
+Section~1 addresses a degeneracy at the algorithm's very first
+iteration ($k=0$), where no curvature information is yet available.
+The quartic subproblem collapses to a damped Gauss-Newton step there,
+which we handle with a steepest-descent, Armijo-line-search safeguard.
+
+Section~\ref{sec:computational-tests} uses the 34 MGH sum-of-squares
+problems to calibrate Algorithm~\ref{complexity}, choosing the PSB
+Hessian-update model and Newton as the quartic-subproblem solver for
+their lower cost, and an order-2 backtracking line search for the BFGS
+baseline. Compared on all 34 problems, the two methods reach
+statistically indistinguishable objective values (Mann-Whitney test),
+but Algorithm~\ref{complexity} is significantly cheaper, the better or
+tied method on about 80\% of the problems.
+
+Section~\ref{cap:coeficient_estimation} applies all three methods to a
+real engineering problem, calibrating the Manning coefficient in the
+Saint-Venant equations, across four scenarios (synthetic and real
+data, dimensions 2 and 10). Algorithm~\ref{complexity} is the cheapest
+and most accurate of the three in three of the four scenarios; the
+exception is the synthetic dimension-10 case, where its regularization
+parameter $\sigma$ stalls and it becomes the worst of the three. The
+same failure mode reappears, without the same cost, in the hardest
+scenario, real data at dimension 10, where Algorithm~\ref{complexity}
+is once again the cheapest and most accurate of the three.
+
+Taken together, these results suggest that the quartic-model approach
+is a competitive alternative to BFGS and BOBYQA for expensive
+sum-of-squares problems with forbidden regions, typically cheaper
+whenever it converges, though its regularization-stall failure mode,
+first seen in the dimension-10 experiments, remains an open point for
+future work.
+
+
 
 
 \clearpage

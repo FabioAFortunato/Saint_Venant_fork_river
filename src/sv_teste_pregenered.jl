@@ -494,7 +494,12 @@ Mesma estrutura de `bfgs_puro_penalizado` (`ffjm2.jl`): gradiente por
 `ForwardDiff.gradient!` sobre o objetivo penalizado, `Optim.BFGS` com
 `LineSearches.BackTracking(order=2)` por padrão, e o mesmo formato de retorno
 (`minimizer`, `minimum`, `residual`, `gradient`, `iterations`, `converged`,
-`status`, ...), para ficar comparável com `ffjm2`/`bfgs_puro_penalizado`.
+`status`, ...), para ficar comparável com `ffjm2`/`bfgs_puro_penalizado`,
+incluindo `accepted_points` (todo `state.x` do callback do `Optim.optimize`,
+um por iteração externa, na ordem), `accepted_function_evaluations` e
+`accepted_gradient_evaluations` (o valor acumulado de `function_evaluations`/
+`gradient_evaluations` no momento em que cada ponto de `accepted_points` foi
+aceito, mesmo comprimento e ordem).
 """
 function bfgs_puro_penalizado_pregerado(
     x_otimo::AbstractVector,
@@ -561,8 +566,14 @@ function bfgs_puro_penalizado_pregerado(
 
     callback_calls = Ref(0)
     alpha_too_small = Ref(false)
+    accepted_points = Vector{Vector{Float64}}()
+    accepted_function_evaluations = Int[]
+    accepted_gradient_evaluations = Int[]
     stop_on_small_alpha = function (state)
         callback_calls[] += 1
+        push!(accepted_points, copy(state.x))
+        push!(accepted_function_evaluations, function_evaluations[])
+        push!(accepted_gradient_evaluations, gradient_evaluations[])
         if callback_calls[] > 1 && state.alpha < alpha_min
             alpha_too_small[] = true
             return true
@@ -626,6 +637,9 @@ function bfgs_puro_penalizado_pregerado(
         execution_time_seconds,
         rejected_directions = 0,
         alphas,
+        accepted_points,
+        accepted_function_evaluations,
+        accepted_gradient_evaluations,
         solution = result,
         u = minimizer,
         objective = Optim.minimum(result),
@@ -668,7 +682,10 @@ de `bfgs_puro_penalizado_pregerado` para ficar comparável, incluindo
 `accepted_points`: como BOBYQA não expõe aceitação/rejeição interna, guarda
 os pontos avaliados que bateram um novo recorde (valor menor que todos os
 anteriores), na ordem em que foram avaliados — mesma convenção de
-`bobyqa_puro_penalizado` (`ffjm2.jl`, dados reais).
+`bobyqa_puro_penalizado` (`ffjm2.jl`, dados reais). `accepted_function_evaluations`
+guarda, para cada ponto de `accepted_points`, o número (1-based) da avaliação
+que produziu esse recorde (mesmo comprimento e ordem);
+`accepted_gradient_evaluations` é sempre zero (BOBYQA não usa gradiente).
 """
 function bobyqa_puro_penalizado_pregerado(
     x_otimo::AbstractVector,
@@ -736,15 +753,19 @@ function bobyqa_puro_penalizado_pregerado(
     # "aceitos" pela região de confiança interna — como proxy, guarda os
     # pontos que bateram um novo recorde (valor menor que todos os
     # anteriores) na ordem em que foram avaliados (mesma convenção de
-    # `bobyqa_puro_penalizado`, `ffjm2.jl`).
+    # `bobyqa_puro_penalizado`, `ffjm2.jl`), junto com o número (1-based) da
+    # avaliação que produziu cada recorde.
     accepted_points = Vector{Vector{Float64}}()
+    accepted_function_evaluations = Int[]
     best_value = Inf
-    for (xi, vi) in zip(evaluated_points, evaluated_values)
+    for (i, (xi, vi)) in enumerate(zip(evaluated_points, evaluated_values))
         if vi < best_value
             push!(accepted_points, xi)
+            push!(accepted_function_evaluations, i)
             best_value = vi
         end
     end
+    accepted_gradient_evaluations = zeros(Int, length(accepted_points))
 
     return (;
         minimizer,
@@ -754,6 +775,8 @@ function bobyqa_puro_penalizado_pregerado(
         hessians = nothing,
         iterations = nothing,
         accepted_points,
+        accepted_function_evaluations,
+        accepted_gradient_evaluations,
         converged,
         status = Symbol(status),
         execution_time_seconds,
@@ -1047,6 +1070,24 @@ end
 # coluna `f` também fica diretamente comparável entre os três, não só o RMSD —
 # desde que a penalidade de caixa esteja inativa no minimizador encontrado.
 # ==============================================================================
+#
+# `points_output` (formato de `points_header` abaixo): um CSV com uma linha
+# por ponto "aceito" de cada método (ver a docstring de cada `*_puro_penalizado*`/
+# de `ffjm2` para o que "aceito" significa em cada caso), nesta ordem de
+# colunas:
+#   - `method`, `point_index` (1-based, na ordem de aceitação);
+#   - `function_evaluations`, `gradient_evaluations`: contagem acumulada, no
+#     método de origem, no momento em que aquele ponto foi aceito (vem de
+#     `accepted_function_evaluations`/`accepted_gradient_evaluations`, quando o
+#     `run` do método os fornece; caso contrário ficam vazios);
+#   - `RMSD`: recalculado no próprio ponto a partir do resíduo bruto (sem
+#     penalidade de caixa), igual à coluna `RMSD` do CSV principal, mas ponto
+#     a ponto — custa uma avaliação extra do resíduo por ponto (sem gradiente,
+#     que sairia caro demais para se repetir em centenas de pontos);
+#   - `x`.
+# Pensado para, por exemplo, plotar avaliações-vs-RMSD da trajetória de cada
+# método.
+# ==============================================================================
 
 function _comparar_solvers(
     raw_residual::Function,
@@ -1063,7 +1104,9 @@ function _comparar_solvers(
         "method", "dimension", "RMSD", "gradient_norm", "execution_time_seconds",
         "function_evaluations", "gradient_evaluations", "converged", "status", "f_x", "minimizer",
     )
-    points_header = ("method", "point_index", "x")
+    points_header = (
+        "method", "point_index", "function_evaluations", "gradient_evaluations", "RMSD", "x",
+    )
 
     function metrics(x)
         residual = collect(raw_residual(x))
@@ -1073,6 +1116,11 @@ function _comparar_solvers(
         config = ForwardDiff.GradientConfig(raw_objective, x, ForwardDiff.Chunk{dim}())
         gradient = ForwardDiff.gradient(raw_objective, x, config)
         return (; rmsd, gradient_norm = norm(gradient))
+    end
+
+    point_rmsd(x) = begin
+        residual = collect(raw_residual(x))
+        sqrt(sum(abs2, residual) / length(residual))
     end
 
     mkpath(dirname(output))
@@ -1105,8 +1153,24 @@ function _comparar_solvers(
                 if points_io !== nothing
                     accepted_points = get(r, :accepted_points, nothing)
                     if accepted_points !== nothing
+                        accepted_fevals = get(r, :accepted_function_evaluations, nothing)
+                        accepted_gevals = get(r, :accepted_gradient_evaluations, nothing)
+                        n = length(accepted_points)
+                        fevals_ok = accepted_fevals !== nothing && length(accepted_fevals) == n
+                        gevals_ok = accepted_gevals !== nothing && length(accepted_gevals) == n
                         for (i, xi) in enumerate(accepted_points)
-                            write(points_io, join(csv_field.((method, i, collect(xi))), ','), '\n')
+                            fevals_i = fevals_ok ? accepted_fevals[i] : ""
+                            gevals_i = gevals_ok ? accepted_gevals[i] : ""
+                            write(
+                                points_io,
+                                join(
+                                    csv_field.((
+                                        method, i, fevals_i, gevals_i, point_rmsd(xi), collect(xi),
+                                    )),
+                                    ',',
+                                ),
+                                '\n',
+                            )
                         end
                         flush(points_io)
                     end
@@ -1138,7 +1202,12 @@ simulação "verdade" extra por solver, negligenciável frente ao custo dos
 BOBYQA; `ffjm2_maxiter` controla o número de iterações
 externas de `ffjm2` (cada uma custando ao menos 1 avaliação de resíduo, mais
 em caso de rejeição por μ). O resultado é salvo em `output` (CSV) e também
-devolvido em `rows`.
+devolvido em `rows`. Se `points_output` for informado (por padrão é
+`nothing`, e nenhum CSV de pontos é escrito), salva também todos os pontos
+"aceitos" de cada método, um por linha (`method,point_index,function_evaluations,
+gradient_evaluations,RMSD,x` — ver o comentário acima de `_comparar_solvers`,
+neste mesmo arquivo, para o significado exato de cada coluna e a convenção de
+"aceito" por método).
 """
 function comparar_solvers_pregerado(
     x_otimo::AbstractVector,
@@ -1172,29 +1241,30 @@ function comparar_solvers_pregerado(
                 x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit, g_tol,
                 penalty_weight, lower, upper, show_trace,
             )
-            accepted_points = [
-                state.metadata["x"]
-                for state in Optim.trace(r.solution) if haskey(state.metadata, "x")
-            ]
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
                     r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
-                    accepted_points)
+                    r.accepted_points, r.accepted_function_evaluations, r.accepted_gradient_evaluations)
         end),
          ("BOBYQA", () -> bobyqa_puro_penalizado_pregerado(
              x_otimo, x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
          )),
         ("ffjm2", function ()
-            external_evaluations = Ref(0)
-            counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
             accepted_points = Vector{Vector{Float64}}()
-            track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
+            accepted_function_evaluations = Int[]
+            accepted_gradient_evaluations = Int[]
+            track_accepted(state) = (
+                push!(accepted_points, copy(state.x));
+                push!(accepted_function_evaluations, state.function_evaluations);
+                push!(accepted_gradient_evaluations, state.gradient_evaluations);
+                false
+            )
             r = ffjm2(
-                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                raw_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
                 callback = track_accepted, ffjm2_options...,
             )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
                     r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
-                    accepted_points)
+                    accepted_points, accepted_function_evaluations, accepted_gradient_evaluations)
         end),
     )
 
@@ -1212,12 +1282,14 @@ gêmeo). `bfgs_puro_penalizado` ignora `tbeg`/`tend` (fixos em `0.0`/`31.0`
 dentro da própria função); os demais solvers usam os valores passados aqui.
 
 Além do CSV principal (`output`), salva em `points_output` todos os pontos
-"aceitos" de cada método, um por linha (`method,point_index,x`): para BFGS,
-o `x` de cada iteração do `Optim.trace`; para BOBYQA, os pontos avaliados
-que bateram um novo recorde (BOBYQA não expõe aceitação/rejeição interna —
-ver docstring de [`bobyqa_puro_penalizado`](@ref)); para `ffjm2`, o `x` no
-início de cada iteração externa (via `callback`), que é sempre o último
-passo de fato aceito pelo teste de razão ρ.
+"aceitos" de cada método, um por linha (`method,point_index,function_evaluations,
+gradient_evaluations,RMSD,x` — ver o comentário acima de `_comparar_solvers`,
+neste mesmo arquivo, para o significado exato de cada coluna): para BFGS, o
+`x` de cada iteração do `Optim.trace`; para BOBYQA, os pontos avaliados que
+bateram um novo recorde (BOBYQA não expõe aceitação/rejeição interna — ver
+docstring de [`bobyqa_puro_penalizado`](@ref)); para `ffjm2`, o `x` no início de cada
+iteração externa (via `callback`), que é sempre o último passo de fato
+aceito pelo teste de razão ρ.
 """
 function comparar_solvers_real(
     x0::AbstractVector;
@@ -1254,17 +1326,22 @@ function comparar_solvers_real(
             x0; tbeg, tend, f_calls_limit, rhobeg, rhoend, penalty_weight, lower, upper,
         )),
         ("ffjm2", function ()
-            external_evaluations = Ref(0)
-            counted_residual(x) = (external_evaluations[] += 1; raw_residual(x))
             accepted_points = Vector{Vector{Float64}}()
-            track_accepted(state) = (push!(accepted_points, copy(state.x)); false)
+            accepted_function_evaluations = Int[]
+            accepted_gradient_evaluations = Int[]
+            track_accepted(state) = (
+                push!(accepted_points, copy(state.x));
+                push!(accepted_function_evaluations, state.function_evaluations);
+                push!(accepted_gradient_evaluations, state.gradient_evaluations);
+                false
+            )
             r = ffjm2(
-                counted_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
+                raw_residual, x0; maxiter = ffjm2_maxiter, g_tol, show_trace,
                 callback = track_accepted, ffjm2_options...,
             )
             return (; r.minimizer, r.minimum, r.execution_time_seconds,
                     r.function_evaluations, r.gradient_evaluations, r.converged, r.status,
-                    accepted_points)
+                    accepted_points, accepted_function_evaluations, accepted_gradient_evaluations)
         end),
     )
 
@@ -1410,7 +1487,10 @@ ao longo do trecho (rugosidade menor a montante, maior a jusante) divergem
 antes de `tend=31` mesmo com variação pequena — testado manualmente com
 várias faixas (`0.06`–`0.14`, `0.07`–`0.12`, `0.075`–`0.105`, `0.08`–`0.10`,
 todas crescentes, todas divergiram). Perfis decrescentes na mesma ordem de
-grandeza são estáveis. Ver [`comparar_solvers_pregerado`](@ref).
+grandeza são estáveis. Ver [`comparar_solvers_pregerado`](@ref) — inclui,
+além do CSV principal, um segundo CSV (`points_output`) com todos os pontos
+aceitos de cada método (RMSD e avaliações acumuladas por ponto inclusos, ver
+o comentário acima de `_comparar_solvers`, neste mesmo arquivo).
 """
 function comparar_solvers_twin_dim10(;
     x_otimo::AbstractVector = collect(range(0.2, 0.15, length = 10)),
@@ -1423,11 +1503,12 @@ function comparar_solvers_twin_dim10(;
     ffjm2_maxiter::Integer = 500,
     show_trace::Bool = true,
     output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim10.csv")),
+    points_output = normpath(joinpath(@__DIR__, "..", "results", "comparacao_solvers_twin_dim10_pontos.csv")),
     kwargs...,
 )
     return comparar_solvers_pregerado(
         x_otimo, x0; tbeg, tend, maxiter, f_calls_limit, g_calls_limit,
-        ffjm2_maxiter, show_trace, output, kwargs...,
+        ffjm2_maxiter, show_trace, output, points_output, kwargs...,
     )
 end
 
@@ -1616,7 +1697,7 @@ end
 
 
 function excluir_depois()
-    comparar_solvers_twin_dim2()
     comparar_solvers_twin_dim10()
+    comparar_solvers_real_dim10()
     return 10
 end
