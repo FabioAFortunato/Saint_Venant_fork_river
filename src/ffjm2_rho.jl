@@ -203,8 +203,9 @@ ou redução relativa pequena da função objetivo.
 `ρ = (f(x) - f(x+d)) / (m(0) - m(d))`, com `m(d) = ½Σqᵢ(d)²` (modelo sem o
 termo μ‖d‖², de modo que `m(0) = f(x)`): redução real sobre a prevista pelo
 modelo do vencedor. Por ser uma razão, não depende da escala de f. Se o passo
-é rejeitado com `rho_reset_min ≤ ρ < 0` (padrão `-1.0`: f subiu, mas menos do
-que o modelo previa cair), toma-se `H = 0` para o modelo vencedor e o
+é rejeitado com `rho_reset_min ≤ ρ < rho_reset_max` (padrões `-1.0` e `1e-10`:
+f subiu, ou praticamente não caiu, mas sem estar muito pior do que o modelo
+previa), toma-se `H = 0` para o modelo vencedor e o
 subproblema é resolvido de novo com o mesmo `μ` (uma vez por modelo e por
 iteração externa). Com `ρ < rho_reset_min` ou `ρ` indefinido apenas `μ`
 cresce; `rho_reset_min = nothing` desativa o reinício. O retorno inclui
@@ -244,6 +245,7 @@ function ffjm2(
     mu_max::Real = 1e12,
     alpha::Real = 1e-4,
     rho_reset_min::Union{Nothing,Real} = -1.0,
+    rho_reset_max::Real = 1e-10,
     gamma_bar::Real = 10.0,
     update_tol::Real = sqrt(eps(Float64)),
     callback = nothing,
@@ -279,6 +281,8 @@ function ffjm2(
     isfinite(alpha) && alpha > 0 || throw(ArgumentError("alpha deve ser finito e positivo"))
     rho_reset_min === nothing || (isfinite(rho_reset_min) && rho_reset_min < 0) ||
         throw(ArgumentError("rho_reset_min deve ser nothing ou finito e negativo"))
+    rho_reset_min === nothing || (isfinite(rho_reset_max) && rho_reset_max > rho_reset_min) ||
+        throw(ArgumentError("rho_reset_max deve ser finito e > rho_reset_min"))
 
     # --------------------------------------------------------------------------
     # 2.2. Resíduos e Jacobiana no ponto inicial
@@ -511,14 +515,14 @@ function ffjm2(
                     break
                 end
 
-                # ρ negativo, mas não muito (rho_reset_min ≤ ρ < 0): a curvatura
+                # ρ negativo, nulo ou quase (rho_reset_min ≤ ρ < rho_reset_max): a curvatura
                 # acumulada em H do modelo vencedor está enganando o modelo, mas
                 # ele ainda não é lixo. Zera H desse modelo (fica Gauss-Newton
                 # amortecido: qᵢ = rᵢ + Jᵢd) e resolve de novo com o MESMO μ. Só
                 # uma vez por modelo e por iteração externa; se ainda for
                 # rejeitado, μ cresce normalmente. ρ muito negativo → só aumenta μ.
                 if rho_reset_min !== nothing && best_direction !== nothing &&
-                   isfinite(rho) && T(rho_reset_min) <= rho < 0 &&
+                   isfinite(rho) && T(rho_reset_min) <= rho < T(rho_reset_max) &&
                    !(direction_source in h_reset_models)
                     for Hi in H[direction_source]
                         fill!(Hi, zero(T))
@@ -527,7 +531,7 @@ function ffjm2(
                     h_resets += 1
                     rejected_directions += 1
                     if show_trace
-                        println("  [k=$k] ρ = $rho ∈ [$rho_reset_min, 0): H[$direction_source] ← 0, resolve de novo com μ = $mu")
+                        println("  [k=$k] ρ = $rho ∈ [$rho_reset_min, $rho_reset_max): H[$direction_source] ← 0, resolve de novo com μ = $mu")
                     end
                     continue
                 end
