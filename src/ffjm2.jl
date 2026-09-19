@@ -199,17 +199,13 @@ produzidos por simulações: RMSD menor que `residual_rms_tol`, norma do
 gradiente dividida pelo número de variáveis menor que `g_tol`, passo pequeno
 ou redução relativa pequena da função objetivo.
 
-**Razão ρ e reinício de H.** Para cada passo candidato calcula-se
-`ρ = (f(x) - f(x+d)) / (m(0) - m(d))`, com `m(d) = ½Σqᵢ(d)²` (modelo sem o
-termo μ‖d‖², de modo que `m(0) = f(x)`): redução real sobre a prevista pelo
-modelo do vencedor. Por ser uma razão, não depende da escala de f. Se o passo
-é rejeitado com `rho_reset_min ≤ ρ < 0` (padrão `-1.0`: f subiu, mas menos do
-que o modelo previa cair), toma-se `H = 0` para o modelo vencedor e o
-subproblema é resolvido de novo com o mesmo `μ` (uma vez por modelo e por
-iteração externa). Com `ρ < rho_reset_min` ou `ρ` indefinido apenas `μ`
-cresce; `rho_reset_min = nothing` desativa o reinício. O retorno inclui
-`rho_history` (ρ do passo aceito em cada iteração; `NaN` em `k=0`) e
-`h_resets` (número de zeragens de H).
+**Passo 2 (bajomo e gcero).** O `d` devolvido pelo subproblema só é candidato se
+satisfizer as duas condições do Algoritmo 4.1: `Mₖ(d) ≤ f(xᵏ)` e
+`‖∇Mₖ(d)‖ ≤ θ‖∇f(xᵏ)‖`, com `theta` (padrão `0.5`, em `(0,1)`;
+`nothing` desliga a segunda). A segunda só é verificada com `model_solver` de
+derivada (`:ipopt`, `:bfgs`). Se nenhum modelo produz candidato válido, conta
+como rejeição (μ cresce e o subproblema é resolvido de novo), em vez de usar
+`-∇f`. O retorno inclui `step2_failures` (candidatos que falharam no Passo 2).
 
 O retorno é um `NamedTuple` com os campos `minimizer`, `minimum`,
 `residual`, `gradient`, `hessians`, `iterations`, `converged`, `status`,
@@ -238,12 +234,12 @@ function ffjm2(
     model_start_spread::Real = 1.0,
     model_seed::Integer = 1234,
     model_solver::Symbol = :ipopt,
-    mu_initial::Real = 1.0,
+    mu_initial::Real = 1e-8,
     mu_grow::Real = 10.0,
     mu_min::Real = 1e-8,
     mu_max::Real = 1e12,
     alpha::Real = 1e-4,
-    rho_reset_min::Union{Nothing,Real} = -1.0,
+    theta::Union{Nothing,Real} = 0.5,
     gamma_bar::Real = 10.0,
     update_tol::Real = sqrt(eps(Float64)),
     callback = nothing,
@@ -277,8 +273,8 @@ function ffjm2(
     isfinite(mu_max) && mu_max >= mu_initial ||
         throw(ArgumentError("mu_max deve ser finito e >= mu_initial"))
     isfinite(alpha) && alpha > 0 || throw(ArgumentError("alpha deve ser finito e positivo"))
-    rho_reset_min === nothing || (isfinite(rho_reset_min) && rho_reset_min < 0) ||
-        throw(ArgumentError("rho_reset_min deve ser nothing ou finito e negativo"))
+    theta === nothing || 0 < theta < 1 ||
+        throw(ArgumentError("theta deve ser nothing ou estar em (0, 1)"))
 
     # --------------------------------------------------------------------------
     # 2.2. Resíduos e Jacobiana no ponto inicial
@@ -354,12 +350,11 @@ function ffjm2(
     status = :maximum_iterations
     iterations = 0
     rejected_directions = 0
+    step2_failures = 0
     model_solves = 0
     model_iterations = 0
     model_solve_time_seconds = 0.0
     mu_history = T[]
-    rho_history = T[]
-    h_resets = 0
     mu = T(mu_initial)
     last_mu = mu
     last_mu_increases = 0
@@ -417,8 +412,6 @@ function ffjm2(
         xnew = x
         rnew = r
         fnew = f
-        rho = T(NaN)
-        h_reset_models = Set{Symbol}()
         if k == 0
             # k=0: ainda não há Hessiana, usa -∇f com backtracking (ver docstring).
             direction_source = :gradient_linesearch
@@ -475,33 +468,49 @@ function ffjm2(
                         )
                     end
                     dtg = dot(g, model_result.direction)
-                    if all(isfinite, model_result.direction) && dtg < best_directional_derivative
+                    # Passo 2 do Algoritmo 4.1: só é candidato o s_trial que
+                    # satisfaz (bajomo) e (gcero).
+                    step2 = _ffjm2_step2_check(
+                        r, J, H[model], mu, model_result.direction, f, norm(g),
+                        theta, model_solver,
+                    )
+                    if show_trace && !step2.ok
+                        println(
+                            "  Subproblema ($model): fora do Passo 2 — ",
+                            step2.bajomo ? "" : "(bajomo) Mₖ(d) = $(step2.model_value) > f = $f  ",
+                            step2.gcero ? "" : "(gcero) ‖∇Mₖ(d)‖ = $(step2.gradient_norm) > θ‖∇f‖",
+                        )
+                    end
+                    step2.ok || (step2_failures += 1)
+                    if all(isfinite, model_result.direction) && step2.ok &&
+                       dtg < best_directional_derivative
                         best_directional_derivative = dtg
                         best_direction = model_result.direction
                         direction_source = model
                     end
                 end
-                d = best_direction === nothing ? -g : best_direction
+                if best_direction === nothing
+                    # Nenhum modelo produziu s_trial válido no Passo 2 (ou a
+                    # direção não é finita): não há ponto a testar no Passo 3.
+                    # Trata como rejeição — aumenta μ (subproblema mais fácil)
+                    # e resolve de novo.
+                    rejected_directions += 1
+                    mu_increases += 1
+                    mu = iszero(mu) ? one(T) : min(mu * T(mu_grow), T(mu_max))
+                    mu >= mu_max && break
+                    continue
+                end
+                d = best_direction
 
                 xnew = x .+ d
                 rnew = T.(residual(xnew))
                 fnew = T(0.5) * dot(rnew, rnew)
 
-                # ρ = (f - fnew) / (m(0) - m(d)), m(d) = ½Σqᵢ(d)² do vencedor.
-                # ρ < 0: o passo AUMENTOU f, embora o modelo previsse redução.
-                rho = T(NaN)
-                if best_direction !== nothing
-                    predicted = _ffjm2_predicted_decrease(r, J, H[direction_source], d, f)
-                    if predicted > 0 && isfinite(fnew)
-                        rho = (f - fnew) / predicted
-                    end
-                end
-
                 # Passo 3: aceita sse f(x+d) ≤ f(x) - α‖d‖².
                 sufficient_decrease = f - T(alpha) * dot(d, d)
                 if show_trace
                     println(
-                        "  [k=$k] μ = $mu | FO = $fnew | ρ = $rho | fonte = $direction_source | ",
+                        "  [k=$k] μ = $mu | FO = $fnew | fonte = $direction_source | ",
                         "limiar de aceitação (Passo 3) = ", sufficient_decrease,
                     )
                 end
@@ -509,27 +518,6 @@ function ffjm2(
                 if fnew <= sufficient_decrease && all(isfinite, d)
                     accepted = true
                     break
-                end
-
-                # ρ negativo, mas não muito (rho_reset_min ≤ ρ < 0): a curvatura
-                # acumulada em H do modelo vencedor está enganando o modelo, mas
-                # ele ainda não é lixo. Zera H desse modelo (fica Gauss-Newton
-                # amortecido: qᵢ = rᵢ + Jᵢd) e resolve de novo com o MESMO μ. Só
-                # uma vez por modelo e por iteração externa; se ainda for
-                # rejeitado, μ cresce normalmente. ρ muito negativo → só aumenta μ.
-                if rho_reset_min !== nothing && best_direction !== nothing &&
-                   isfinite(rho) && T(rho_reset_min) <= rho < 0 &&
-                   !(direction_source in h_reset_models)
-                    for Hi in H[direction_source]
-                        fill!(Hi, zero(T))
-                    end
-                    push!(h_reset_models, direction_source)
-                    h_resets += 1
-                    rejected_directions += 1
-                    if show_trace
-                        println("  [k=$k] ρ = $rho ∈ [$rho_reset_min, 0): H[$direction_source] ← 0, resolve de novo com μ = $mu")
-                    end
-                    continue
                 end
 
                 rejected_directions += 1
@@ -546,7 +534,6 @@ function ffjm2(
         last_direction_source = direction_source
         last_mu = mu
         push!(mu_history, mu)
-        push!(rho_history, rho)
 
         # Busca em μ esgotada sem passo aceito: para aqui (ver docstring).
         if !accepted
@@ -613,9 +600,8 @@ function ffjm2(
         total_function_evaluation_time_seconds,
         total_gradient_evaluation_time_seconds,
         rejected_directions,
+        step2_failures,
         mu_history,
-        rho_history,
-        h_resets,
         model_solver,
         model_solves,
         model_iterations,
@@ -625,15 +611,32 @@ function ffjm2(
     )
 end
 
-# Redução prevista pelo modelo: m(0) - m(d) = f - ½Σqᵢ(d)², com
-# qᵢ(d) = rᵢ + Jᵢ·d + ½ d'Hᵢd (sem o termo μ‖d‖²). Se d minimiza Mₖ, vale
-# pred ≥ μ‖d‖² ≥ 0; pred ≤ 0 (ex.: d = -g de reserva) faz o chamador ignorar ρ.
-function _ffjm2_predicted_decrease(r, J, H, d, f)
-    q = similar(r, promote_type(eltype(r), eltype(d)))
-    for i in eachindex(r)
-        q[i] = r[i] + dot(view(J, i, :), d) + dot(d, H[i] * d) / 2
+# Condições do Passo 2 do Algoritmo 4.1 de `_research/ffjm2.pdf`, na escala do
+# código (f = ½‖r‖², Mₖ = μ‖d‖² + ½Σqᵢ²; equivale ao artigo com σ = 2μ, e as
+# duas condições ficam inalteradas):
+#   (bajomo) Mₖ(d) ≤ f(xᵏ)                 [Mₖ(0) = f(xᵏ)]
+#   (gcero)  ‖∇Mₖ(d)‖ ≤ θ‖∇f(xᵏ)‖
+# `(gcero)` só é verificada para solvers com derivada (:ipopt, :bfgs); os sem
+# derivada (:bobyqa, :mads) só passam por `(bajomo)`. Usa uma folga relativa
+# minúscula em `(bajomo)`, pois o Ipopt pode devolver Mₖ(d) = f a menos de
+# arredondamento (ex.: d ≈ 0).
+function _ffjm2_step2_check(r, J, H, mu, d, f, gnorm, theta, solver)
+    T = eltype(r)
+    all(isfinite, d) ||
+        return (; ok = false, bajomo = false, gcero = false,
+                model_value = T(NaN), gradient_norm = T(NaN))
+    evaluator = _FFJM2IpoptEvaluator(collect(r), Matrix(J), H, T(mu))
+    model_value = MOI.eval_objective(evaluator, d)
+    bajomo = model_value <= f + sqrt(eps(T)) * max(one(T), abs(f))
+    gradient_norm = T(NaN)
+    gcero = true
+    if theta !== nothing && solver in (:ipopt, :bfgs)
+        gradient = zeros(T, length(d))
+        MOI.eval_objective_gradient(evaluator, gradient, d)
+        gradient_norm = norm(gradient)
+        gcero = gradient_norm <= T(theta) * gnorm
     end
-    return f - dot(q, q) / 2
+    return (; ok = bajomo && gcero, bajomo, gcero, model_value, gradient_norm)
 end
 
 # ==============================================================================
